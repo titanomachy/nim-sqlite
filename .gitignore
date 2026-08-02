@@ -4,3 +4,6 @@ nimble.develop
 nimble.paths
 nimbledeps
 build/
+
+# Prevent an accidental database file from breaking Windows checkouts.
+/:memory

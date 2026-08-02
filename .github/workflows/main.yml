@@ -30,13 +30,12 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Cache Nimble packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.nimble
           key: nimble-v2-${{ runner.os }}-${{ matrix.nim }}-${{ hashFiles('*.nimble') }}
           restore-keys: |
             nimble-v2-${{ runner.os }}-${{ matrix.nim }}-
-            nimble-v2-${{ runner.os }}-
         if: runner.os != 'Windows'
 
       - name: Set up Nim

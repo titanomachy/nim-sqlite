@@ -13,7 +13,7 @@ requires "sqlite3_abi"
 
 task test, "Run tests":
     mkDir binDir
-    exec "nim c -r --nimcache:build/nimcache/tests --out:build/tests tests/tests"
+    exec "nim c -r --path:src --nimcache:build/nimcache/tests --out:build/tests tests/tests"
 
 task docs, "Generate docs":
     exec "nim doc -o:docs/index.html src/nim_sqlite.nim"
