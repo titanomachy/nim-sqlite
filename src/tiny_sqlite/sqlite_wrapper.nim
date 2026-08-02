@@ -21,7 +21,7 @@ type
         {.cdecl, raises: [].}
 
     SqliteDestructor* = proc (p: pointer)
-        {.cdecl, locks: 0, tags: [], raises: [], gcsafe.}
+        {.cdecl, tags: [], raises: [], gcsafe.}
 
 const
     SQLITE_OK*         = 0.cint

@@ -2,7 +2,7 @@
 ## https://github.com/jackhftang/lrucache.nim.
 
 import std / [lists, tables]
-from .. / .. / .. / .. / nim-sqlite3-abi / sqlite3_abi as abi import nil
+from pkg / sqlite3_abi as abi import nil
 
 type
   Node = object

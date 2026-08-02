@@ -1,5 +1,6 @@
 import std / [unittest, options, sequtils, times]
 import .. / src / tiny_sqlite
+from tiny_sqlite / sqlite3_abi as abi import nil
 
 const SelectPersons = "SELECT name, age FROM Person"
 const SelectJohnDoe = "SELECT name, age FROM Person WHERE name = 'John Doe'"
@@ -227,6 +228,12 @@ test "db.isOpen":
     check not db.isOpen
     expect AssertionDefect:
         discard db.all(SelectPersons)
+
+test "raw SQLite ABI access":
+    withDb:
+        let handle: ptr abi.sqlite3 = db.unsafeHandle
+        check not handle.isNil
+        check abi.sqlite3_get_autocommit(handle) == 1
 
 test "db.isReadonly":
     withDb:
