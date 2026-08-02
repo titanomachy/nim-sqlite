@@ -16,4 +16,4 @@ task test, "Run tests":
     exec "nim c -r --nimcache:build/nimcache/tests --out:build/tests tests/tests"
 
 task docs, "Generate docs":
-    exec "nim doc -o:docs/nim_sqlite.html src/nim_sqlite.nim"
+    exec "nim doc -o:docs/index.html src/nim_sqlite.nim"

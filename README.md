@@ -1,60 +1,251 @@
-# nim-sqlite [![CI](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml/badge.svg)](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml)
+# nim-sqlite
 
-`nim-sqlite` is a comparatively thin, type-safe wrapper for the SQLite database library. The Nim module is named `nim_sqlite` because Nimble package and Nim module names cannot contain hyphens.
+[![CI](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml/badge.svg)](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml)
+[Documentation](https://titanomachy.github.io/nim-sqlite/) · [MIT License](LICENSE)
 
-It differs from the standard library module `std/db_sqlite` in several ways:
+`nim-sqlite` is a focused, type-safe SQLite library for Nim. It stays close to SQLite instead of presenting a generic database abstraction, while adding safe connection and statement lifecycles, parameter binding, typed values, row unpacking, transactions, and prepared-statement caching.
 
-- `nim_sqlite` represents database values with a type-safe case object called `DbValue` instead of treating every value as a string. Among other things, this means that SQLite `NULL` values can be properly supported.
+The repository and project are named `nim-sqlite`. The Nimble package and importable module are named `nim_sqlite` because Nim identifiers and Nimble package names cannot contain hyphens.
 
-- `nim_sqlite` is designed specifically for SQLite, rather than as a generic database API. The standard library database modules are designed so an application may support several database engines by replacing an import; this library deliberately does not make that tradeoff.
+## Why use it?
 
-- `nim_sqlite` wraps raw SQLite handles to prevent use-after-free bugs from triggering undefined behavior, unlike direct use of `std/db_sqlite` handles.
+- **Typed SQLite values.** `DbValue` distinguishes integers, floating-point values, text, blobs, and `NULL` instead of representing every result as a string.
+- **Idiomatic conversion.** Bind ordinary Nim values as query parameters and unpack result rows into tuples, including nullable `Option[T]` fields.
+- **Safe handles.** Connections and prepared statements are wrapped so the library can detect attempts to use closed or finalized resources.
+- **Several query styles.** Stream rows with `iterate`, collect them with `all`, fetch one row with `one`, or fetch one cell with `value`.
+- **Transaction helpers.** `transaction`, `execMany`, and `execScript` handle commits and rollbacks for you.
+- **SQLite-specific by design.** The API exposes useful SQLite behavior without pretending to be interchangeable with other database engines.
+
+## Requirements
+
+- Nim 2.2.10 or newer
+- The SQLite 3 shared library available to your application at runtime
 
 ## Installation
 
-Install the package from this repository:
+Install the current repository with Nimble:
 
 ```sh
 nimble install https://github.com/titanomachy/nim-sqlite
 ```
 
-The Nimble package name is `nim_sqlite`.
-
-## Usage
+Then import the module as `nim_sqlite`:
 
 ```nim
-import nim_sqlite, std / options
+import nim_sqlite
+```
+
+## Quick start
+
+This example creates an in-memory database, inserts nullable data with bound parameters, and converts each result row into a typed tuple:
+
+```nim
+import nim_sqlite, std/options
 
 let db = openDatabase(":memory:")
-db.execScript("""
-CREATE TABLE Person(
-    name TEXT,
-    age INTEGER
-);
 
-INSERT INTO
-    Person(name, age)
-VALUES
-    ("John Doe", 47);
-""")
+try:
+  db.execScript("""
+    CREATE TABLE person (
+      id   INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      age  INTEGER
+    );
+  """)
 
-db.exec("INSERT INTO Person VALUES(?, ?)", "Jane Doe", nil)
+  db.exec("INSERT INTO person(name, age) VALUES(?, ?)", "Ada", 36)
+  db.exec("INSERT INTO person(name, age) VALUES(?, ?)", "Grace", nil)
 
-for row in db.iterate("SELECT name, age FROM Person"):
+  for row in db.iterate("SELECT name, age FROM person ORDER BY id"):
     let (name, age) = row.unpack((string, Option[int]))
-    echo name, " ", age
-
-# Output:
-# John Doe Some(47)
-# Jane Doe None[int]
+    echo name, ": ", age
+finally:
+  db.close()
 ```
+
+Output:
+
+```text
+Ada: some(36)
+Grace: none(int)
+```
+
+Always close a connection when it is no longer needed. A `try`/`finally` block is a convenient way to guarantee that cleanup.
+
+## Executing SQL safely
+
+Use `exec` for a single SQL statement. Values passed after the SQL string are bound to `?` placeholders and converted to SQLite values:
+
+```nim
+db.exec(
+  "UPDATE person SET age = ? WHERE name = ?",
+  37,
+  "Ada"
+)
+
+echo db.changes # rows changed by the most recent INSERT, UPDATE, or DELETE
+```
+
+Bound parameters handle quoting and data types correctly. Do not build SQL by interpolating untrusted values into the SQL string.
+
+Use `execScript` when schema setup or a migration contains several statements. The complete script runs in a transaction:
+
+```nim
+db.execScript("""
+  CREATE TABLE project (
+    id   INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+  );
+
+  CREATE INDEX project_name_idx ON project(name);
+""")
+```
+
+## Reading rows
+
+Choose the query operation based on how much data you need:
+
+```nim
+import std/options
+
+# Stream rows without collecting the complete result set.
+for row in db.iterate("SELECT id, name FROM person ORDER BY id"):
+  let (id, name) = row.unpack((int, string))
+  echo id, " ", name
+
+# Collect every row.
+let adults = db.all("SELECT name, age FROM person WHERE age >= ?", 18)
+
+# Fetch at most one row.
+let ada = db.one("SELECT name, age FROM person WHERE name = ?", "Ada")
+if ada.isSome:
+  let (name, age) = ada.get.unpack((string, Option[int]))
+  echo name, " ", age
+
+# Fetch the first column of the first row.
+let count = db.value("SELECT COUNT(*) FROM person").get.fromDbValue(int)
+echo "people: ", count
+```
+
+`ResultRow` also supports access by index or unambiguous column name:
+
+```nim
+let row = db.one("SELECT id, name FROM person LIMIT 1").get
+echo row[0].intVal
+echo row["name"].strVal
+```
+
+Tuple unpacking is usually preferable because it makes the expected result shape and Nim types explicit.
+
+## Supported values
+
+The built-in conversions are:
+
+| Nim value | SQLite storage class |
+| --- | --- |
+| Ordinal types such as `int`, `bool`, and enums | `INTEGER` |
+| Floating-point types | `REAL` |
+| `string` | `TEXT` |
+| `seq[byte]` | `BLOB` |
+| `Option[T]` or `nil` | `NULL` when empty; otherwise the mapping for `T` |
+
+Use `toDbValue` to convert a Nim value explicitly and `fromDbValue` to convert a result. You can support application-specific types by defining matching overloads:
+
+```nim
+import std/times
+
+proc toDbValue(value: Time): DbValue =
+  DbValue(kind: sqliteInteger, intVal: value.toUnix)
+
+proc fromDbValue(value: DbValue, _: typedesc[Time]): Time =
+  fromUnix(value.intVal)
+```
+
+These overloads also allow `Time` values to participate in parameter binding and tuple unpacking.
+
+## Bulk inserts and transactions
+
+`execMany` repeats one statement for several parameter sets and wraps the operation in a transaction:
+
+```nim
+let people = @[
+  toDbValues("Alan", 41),
+  toDbValues("Barbara", 29),
+  toDbValues("Edsger", 72)
+]
+
+db.execMany(
+  "INSERT INTO person(name, age) VALUES(?, ?)",
+  people
+)
+```
+
+Use the `transaction` template when several different operations must succeed or fail together:
+
+```nim
+db.transaction:
+  db.exec("UPDATE account SET balance = balance - ? WHERE id = ?", 50, 1)
+  db.exec("UPDATE account SET balance = balance + ? WHERE id = ?", 50, 2)
+```
+
+The transaction commits when the block finishes normally and rolls back when an exception escapes it. Nested `transaction` blocks reuse the active transaction.
+
+## Prepared statements and caching
+
+Normal connection methods automatically cache recently prepared SQL statements. The default cache holds 100 statements, so manual statement management is usually unnecessary. Set `cacheSize = 0` when opening a database to disable the cache.
+
+For explicit reuse, prepare and finalize a statement yourself:
+
+```nim
+let insertPerson = db.stmt("INSERT INTO person(name, age) VALUES(?, ?)")
+
+try:
+  insertPerson.exec("Donald", 45)
+  insertPerson.exec("Frances", 33)
+finally:
+  insertPerson.finalize()
+```
+
+Prepared statements provide the same `exec`, `execMany`, `iterate`, `all`, `one`, and `value` operations as a connection.
+
+## Opening modes
+
+```nim
+let memoryDb = openDatabase(":memory:")
+let writableDb = openDatabase("application.db")             # dbReadWrite
+let readonlyDb = openDatabase("application.db", dbRead)     # must already exist
+```
+
+`dbReadWrite` is the default and creates the database file when necessary. `dbRead` opens an existing database without write access. Each opened connection must eventually be closed.
+
+SQLite failures raise `SqliteError`. Programming errors such as using a closed connection or a finalized statement are detected with assertions.
 
 ## Documentation
 
-- [Generated API documentation](docs/nim_sqlite.html)
+The complete generated API reference is published at:
+
+**https://titanomachy.github.io/nim-sqlite/**
+
+To build the same documentation locally:
+
+```sh
+nimble docs
+```
+
+Then open `docs/index.html` in a browser.
+
+## Development
+
+Run the test suite with:
+
+```sh
+nimble test -Y
+```
+
+The tests cover connection lifecycle, queries, transactions, prepared statements, caching, type conversion, extensions, and foreign keys.
 
 ## Upstream and license
 
-This project is a fork of [tiny_sqlite](https://github.com/GULPF/tiny_sqlite), originally created by [Oscar Nihlgård](https://github.com/GULPF). His authorship is retained in the package metadata and in the repository history.
+This project is a fork of [tiny_sqlite](https://github.com/GULPF/tiny_sqlite), originally created by [Oscar Nihlgård](https://github.com/GULPF). His authorship is retained in the package metadata, license, and repository history.
 
-The library remains available under the MIT License. See [LICENSE](LICENSE), which retains Oscar Nihlgård's original copyright notice and the complete license text.
+`nim-sqlite` is distributed under the [MIT License](LICENSE). The original copyright notice and complete license text are retained.
