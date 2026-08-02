@@ -56,7 +56,8 @@
     <ul class="simple simple-toc" id="toc-list">
   <li><a class="reference" id="opening-a-database-connectiondot_toc" href="#opening-a-database-connectiondot">Opening a database connection.</a></li>
 <li><a class="reference" id="executing-sql_toc" href="#executing-sql">Executing SQL</a></li>
-<li><a class="reference" id="reading-data_toc" href="#reading-data">Reading data</a></li>
+<ul class="simple"><li><a class="reference" id="executing-sql-named-parameters_toc" href="#executing-sql-named-parameters">Named parameters</a></li>
+</ul><li><a class="reference" id="reading-data_toc" href="#reading-data">Reading data</a></li>
 <li><a class="reference" id="inserting-data-in-bulk_toc" href="#inserting-data-in-bulk">Inserting data in bulk</a></li>
 <li><a class="reference" id="transactions_toc" href="#transactions">Transactions</a></li>
 <li><a class="reference" id="prepared-statements_toc" href="#prepared-statements">Prepared statements</a></li>
@@ -112,6 +113,8 @@
 <ul class="simple nested-toc-section">all
   <li><a class="reference" href="#all%2CDbConn%2Cstring%2Cvarargs%5BDbValue%2CtoDbValue%5D" title="all(db: DbConn; sql: string; params: varargs[DbValue, toDbValue]): seq[ResultRow]">all(db: DbConn; sql: string; params: varargs[DbValue, toDbValue]): seq[ResultRow]</a></li>
 <li><a class="reference" href="#all%2CSqlStatement%2Cvarargs%5BDbValue%2CtoDbValue%5D" title="all(statement: SqlStatement; params: varargs[DbValue, toDbValue]): seq[ResultRow]">all(statement: SqlStatement; params: varargs[DbValue, toDbValue]): seq[ResultRow]</a></li>
+<li><a class="reference" href="#all%2CDbConn%2Cstring%2CT" title="all[T: tuple](db: DbConn; sql: string; params: T): seq[ResultRow]">all[T: tuple](db: DbConn; sql: string; params: T): seq[ResultRow]</a></li>
+<li><a class="reference" href="#all%2CSqlStatement%2CT" title="all[T: tuple](statement: SqlStatement; params: T): seq[ResultRow]">all[T: tuple](statement: SqlStatement; params: T): seq[ResultRow]</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">changes
@@ -129,11 +132,15 @@
 <ul class="simple nested-toc-section">exec
   <li><a class="reference" href="#exec%2CDbConn%2Cstring%2Cvarargs%5BDbValue%2CtoDbValue%5D" title="exec(db: DbConn; sql: string; params: varargs[DbValue, toDbValue])">exec(db: DbConn; sql: string; params: varargs[DbValue, toDbValue])</a></li>
 <li><a class="reference" href="#exec%2CSqlStatement%2Cvarargs%5BDbValue%2CtoDbValue%5D" title="exec(statement: SqlStatement; params: varargs[DbValue, toDbValue])">exec(statement: SqlStatement; params: varargs[DbValue, toDbValue])</a></li>
+<li><a class="reference" href="#exec%2CDbConn%2Cstring%2CT" title="exec[T: tuple](db: DbConn; sql: string; params: T)">exec[T: tuple](db: DbConn; sql: string; params: T)</a></li>
+<li><a class="reference" href="#exec%2CSqlStatement%2CT" title="exec[T: tuple](statement: SqlStatement; params: T)">exec[T: tuple](statement: SqlStatement; params: T)</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">execMany
   <li><a class="reference" href="#execMany%2CDbConn%2Cstring%2Cseq%5Bseq%5BDbValue%5D%5D" title="execMany(db: DbConn; sql: string; params: seq[seq[DbValue]])">execMany(db: DbConn; sql: string; params: seq[seq[DbValue]])</a></li>
 <li><a class="reference" href="#execMany%2CSqlStatement%2Cseq%5Bseq%5BDbValue%5D%5D" title="execMany(statement: SqlStatement; params: seq[seq[DbValue]])">execMany(statement: SqlStatement; params: seq[seq[DbValue]])</a></li>
+<li><a class="reference" href="#execMany%2CDbConn%2Cstring%2CopenArray%5BT%5D" title="execMany[T: tuple](db: DbConn; sql: string; params: openArray[T])">execMany[T: tuple](db: DbConn; sql: string; params: openArray[T])</a></li>
+<li><a class="reference" href="#execMany%2CSqlStatement%2CopenArray%5BT%5D" title="execMany[T: tuple](statement: SqlStatement; params: openArray[T])">execMany[T: tuple](statement: SqlStatement; params: openArray[T])</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">execScript
@@ -188,6 +195,8 @@
 <li><a class="reference" href="#one%2CSqlStatement%2Cvarargs%5BDbValue%2CtoDbValue%5D" title="one(statement: SqlStatement; params: varargs[DbValue, toDbValue]): Option[
     ResultRow]">one(statement: SqlStatement; params: varargs[DbValue, toDbValue]): Option[
     ResultRow]</a></li>
+<li><a class="reference" href="#one%2CDbConn%2Cstring%2CT" title="one[T: tuple](db: DbConn; sql: string; params: T): Option[ResultRow]">one[T: tuple](db: DbConn; sql: string; params: T): Option[ResultRow]</a></li>
+<li><a class="reference" href="#one%2CSqlStatement%2CT" title="one[T: tuple](statement: SqlStatement; params: T): Option[ResultRow]">one[T: tuple](statement: SqlStatement; params: T): Option[ResultRow]</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">openDatabase
@@ -233,6 +242,8 @@
 <li><a class="reference" href="#value%2CSqlStatement%2Cvarargs%5BDbValue%2CtoDbValue%5D" title="value(statement: SqlStatement; params: varargs[DbValue, toDbValue]): Option[
     DbValue]">value(statement: SqlStatement; params: varargs[DbValue, toDbValue]): Option[
     DbValue]</a></li>
+<li><a class="reference" href="#value%2CDbConn%2Cstring%2CT" title="value[T: tuple](db: DbConn; sql: string; params: T): Option[DbValue]">value[T: tuple](db: DbConn; sql: string; params: T): Option[DbValue]</a></li>
+<li><a class="reference" href="#value%2CSqlStatement%2CT" title="value[T: tuple](statement: SqlStatement; params: T): Option[DbValue]">value[T: tuple](statement: SqlStatement; params: T): Option[DbValue]</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">values
@@ -250,6 +261,8 @@
       <ul class="simple nested-toc-section">iterate
   <li><a class="reference" href="#iterate.i%2CDbConn%2Cstring%2Cvarargs%5BDbValue%2CtoDbValue%5D" title="iterate(db: DbConn; sql: string; params: varargs[DbValue, toDbValue]): ResultRow">iterate(db: DbConn; sql: string; params: varargs[DbValue, toDbValue]): ResultRow</a></li>
 <li><a class="reference" href="#iterate.i%2CSqlStatement%2Cvarargs%5BDbValue%2CtoDbValue%5D" title="iterate(statement: SqlStatement; params: varargs[DbValue, toDbValue]): ResultRow">iterate(statement: SqlStatement; params: varargs[DbValue, toDbValue]): ResultRow</a></li>
+<li><a class="reference" href="#iterate.i%2CDbConn%2Cstring%2CT" title="iterate[T: tuple](db: DbConn; sql: string; params: T): ResultRow">iterate[T: tuple](db: DbConn; sql: string; params: T): ResultRow</a></li>
+<li><a class="reference" href="#iterate.i%2CSqlStatement%2CT" title="iterate[T: tuple](statement: SqlStatement; params: T): ResultRow">iterate[T: tuple](statement: SqlStatement; params: T): ResultRow</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">rows
@@ -301,6 +314,13 @@
     INSERT INTO Person(name, age)
     VALUES(?, ?);
 &quot;&quot;&quot;</span><span class="Punctuation">,</span> <span class="StringLit">&quot;John Doe&quot;</span><span class="Punctuation">,</span> <span class="DecNumber">37</span><span class="Punctuation">)</span></pre>
+<h2><a class="toc-backref" id="executing-sql-named-parameters" href="#executing-sql-named-parameters">Named parameters</a></h2><p>For order-independent binding, use SQLite <tt class="docutils literal"><span class="pre">:name</span></tt> parameters and pass a named tuple. A tuple field named <tt class="docutils literal"><span class="pre">name</span></tt> binds <tt class="docutils literal"><span class="pre">:name</span></tt> regardless of the order of the fields or parameters:</p>
+<pre class="listing"><span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">exec</span><span class="Punctuation">(</span><span class="LongStringLit">&quot;&quot;&quot;
+    UPDATE Person
+    SET age = :age
+    WHERE name = :name
+&quot;&quot;&quot;</span><span class="Punctuation">,</span> <span class="Punctuation">(</span><span class="Identifier">name</span><span class="Punctuation">:</span> <span class="StringLit">&quot;John Doe&quot;</span><span class="Punctuation">,</span> <span class="Identifier">age</span><span class="Punctuation">:</span> <span class="DecNumber">38</span><span class="Punctuation">)</span><span class="Punctuation">)</span></pre><p>Named tuples can be used with <tt class="docutils literal"><span class="pre">exec</span></tt>, <tt class="docutils literal"><span class="pre">iterate</span></tt>, <tt class="docutils literal"><span class="pre">all</span></tt>, <tt class="docutils literal"><span class="pre">one</span></tt>, and <tt class="docutils literal"><span class="pre">value</span></tt>, including their prepared-statement versions. <tt class="docutils literal"><span class="pre">execMany</span></tt> accepts an array or sequence of named tuples. Repeated occurrences of a parameter share one tuple field. Missing parameters, unknown tuple fields, and positional <tt class="docutils literal"><span class="pre">?</span></tt> parameters used with a named tuple raise <tt class="docutils literal"><span class="pre">SqliteError</span></tt>.</p>
+
 <h1><a class="toc-backref" id="reading-data" href="#reading-data">Reading data</a></h1><p>Four different procedures for reading data are available:</p>
 <ul class="simple"><li><a class="reference external" href="#all,DbConn,string,varargs[DbValue,toDbValue]">all</a>: procedure returning all result rows</li>
 <li><a class="reference external" href="#iterate.i,DbConn,string,varargs[DbValue,toDbValue]">iterate</a>: iterator yielding each result row one by one</li>
@@ -524,6 +544,22 @@ Raised when whenever a database related error occurs. Errors are typically a res
     
   </dd>
 </div>
+<div id="all,DbConn,string,T">
+  <dt><pre><span class="Keyword">proc</span> <a href="#all%2CDbConn%2Cstring%2CT"><span class="Identifier">all</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><a href="#ResultRow"><span class="Identifier">ResultRow</span></a><span class="Other">]</span></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre">sql</span></tt> using named <tt class="docutils literal"><span class="pre">:name</span></tt> parameters and returns all rows.
+
+  </dd>
+</div>
+<div id="all,SqlStatement,T">
+  <dt><pre><span class="Keyword">proc</span> <a href="#all%2CSqlStatement%2CT"><span class="Identifier">all</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><a href="#ResultRow"><span class="Identifier">ResultRow</span></a><span class="Other">]</span></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre"><span class="Identifier">statement</span></span></tt> using named <tt class="docutils literal"><span class="pre">:name</span></tt> parameters and returns all rows.
+
+  </dd>
+</div>
 
 </div>
 <div id="changes-procs-all">
@@ -586,6 +622,27 @@ Raised when whenever a database related error occurs. Errors are typically a res
     
   </dd>
 </div>
+<div id="exec,DbConn,string,T">
+  <dt><pre><span class="Keyword">proc</span> <a href="#exec%2CDbConn%2Cstring%2CT"><span class="Identifier">exec</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre">sql</span></tt> using a named tuple whose field names correspond to <tt class="docutils literal"><span class="pre">:name</span></tt> parameters. Tuple field order does not affect binding.
+<p><strong class="examples_text">Example:</strong></p>
+<pre class="listing"><span class="Keyword">let</span> <span class="Identifier">db</span> <span class="Operator">=</span> <span class="Identifier">openDatabase</span><span class="Punctuation">(</span><span class="StringLit">&quot;:memory:&quot;</span><span class="Punctuation">)</span>
+<span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">exec</span><span class="Punctuation">(</span><span class="StringLit">&quot;CREATE TABLE Person(name, age)&quot;</span><span class="Punctuation">)</span>
+<span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">exec</span><span class="Punctuation">(</span><span class="StringLit">&quot;INSERT INTO Person(name, age) VALUES(:name, :age)&quot;</span><span class="Punctuation">,</span>
+    <span class="Punctuation">(</span><span class="Identifier">age</span><span class="Punctuation">:</span> <span class="DecNumber">23</span><span class="Punctuation">,</span> <span class="Identifier">name</span><span class="Punctuation">:</span> <span class="StringLit">&quot;John Doe&quot;</span><span class="Punctuation">)</span><span class="Punctuation">)</span></pre>
+
+  </dd>
+</div>
+<div id="exec,SqlStatement,T">
+  <dt><pre><span class="Keyword">proc</span> <a href="#exec%2CSqlStatement%2CT"><span class="Identifier">exec</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre"><span class="Identifier">statement</span></span></tt> using named <tt class="docutils literal"><span class="pre">:name</span></tt> parameters. Tuple field order does not affect binding.
+
+  </dd>
+</div>
 
 </div>
 <div id="execMany-procs-all">
@@ -606,6 +663,22 @@ Raised when whenever a database related error occurs. Errors are typically a res
     
     Executes <tt class="docutils literal"><span class="pre">statement</span></tt> repeatedly using each element of <tt class="docutils literal"><span class="pre">params</span></tt> as parameters. The statements are executed inside a transaction.
     
+  </dd>
+</div>
+<div id="execMany,DbConn,string,openArray[T]">
+  <dt><pre><span class="Keyword">proc</span> <a href="#execMany%2CDbConn%2Cstring%2CopenArray%5BT%5D"><span class="Identifier">execMany</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">openArray</span><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre">sql</span></tt> repeatedly using named tuples as parameters. Tuple field names correspond to <tt class="docutils literal"><span class="pre">:name</span></tt> parameters.
+
+  </dd>
+</div>
+<div id="execMany,SqlStatement,openArray[T]">
+  <dt><pre><span class="Keyword">proc</span> <a href="#execMany%2CSqlStatement%2CopenArray%5BT%5D"><span class="Identifier">execMany</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">openArray</span><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre"><span class="Identifier">statement</span></span></tt> repeatedly using named tuples as parameters.
+
   </dd>
 </div>
 
@@ -796,6 +869,22 @@ Raised when whenever a database related error occurs. Errors are typically a res
     
   </dd>
 </div>
+<div id="one,DbConn,string,T">
+  <dt><pre><span class="Keyword">proc</span> <a href="#one%2CDbConn%2Cstring%2CT"><span class="Identifier">one</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">Option</span><span class="Other">[</span><a href="#ResultRow"><span class="Identifier">ResultRow</span></a><span class="Other">]</span></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre">sql</span></tt> using named <tt class="docutils literal"><span class="pre">:name</span></tt> parameters and returns the first row.
+
+  </dd>
+</div>
+<div id="one,SqlStatement,T">
+  <dt><pre><span class="Keyword">proc</span> <a href="#one%2CSqlStatement%2CT"><span class="Identifier">one</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">Option</span><span class="Other">[</span><a href="#ResultRow"><span class="Identifier">ResultRow</span></a><span class="Other">]</span></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre"><span class="Identifier">statement</span></span></tt> using named <tt class="docutils literal"><span class="pre">:name</span></tt> parameters and returns the first row.
+
+  </dd>
+</div>
 
 </div>
 <div id="openDatabase-procs-all">
@@ -960,6 +1049,22 @@ Raised when whenever a database related error occurs. Errors are typically a res
     
   </dd>
 </div>
+<div id="value,DbConn,string,T">
+  <dt><pre><span class="Keyword">proc</span> <a href="#value%2CDbConn%2Cstring%2CT"><span class="Identifier">value</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">Option</span><span class="Other">[</span><a href="#DbValue"><span class="Identifier">DbValue</span></a><span class="Other">]</span></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre">sql</span></tt> using named <tt class="docutils literal"><span class="pre">:name</span></tt> parameters and returns the first column of the first row.
+
+  </dd>
+</div>
+<div id="value,SqlStatement,T">
+  <dt><pre><span class="Keyword">proc</span> <a href="#value%2CSqlStatement%2CT"><span class="Identifier">value</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">Option</span><span class="Other">[</span><a href="#DbValue"><span class="Identifier">DbValue</span></a><span class="Other">]</span></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre"><span class="Identifier">statement</span></span></tt> using named <tt class="docutils literal"><span class="pre">:name</span></tt> parameters and returns the first column of the first row.
+
+  </dd>
+</div>
 
 </div>
 <div id="values-procs-all">
@@ -996,6 +1101,22 @@ Raised when whenever a database related error occurs. Errors are typically a res
     
     Executes <tt class="docutils literal"><span class="pre">statement</span></tt> and yields each result row one by one.
     
+  </dd>
+</div>
+<div id="iterate.i,DbConn,string,T">
+  <dt><pre><span class="Keyword">iterator</span> <a href="#iterate.i%2CDbConn%2Cstring%2CT"><span class="Identifier">iterate</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <a href="#ResultRow"><span class="Identifier">ResultRow</span></a></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre">sql</span></tt> using named <tt class="docutils literal"><span class="pre">:name</span></tt> parameters and yields each result row. Tuple field order does not affect binding.
+
+  </dd>
+</div>
+<div id="iterate.i,SqlStatement,T">
+  <dt><pre><span class="Keyword">iterator</span> <a href="#iterate.i%2CSqlStatement%2CT"><span class="Identifier">iterate</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">T</span><span class="Other">)</span><span class="Other">:</span> <a href="#ResultRow"><span class="Identifier">ResultRow</span></a></pre></dt>
+  <dd>
+
+    Executes <tt class="docutils literal"><span class="pre"><span class="Identifier">statement</span></span></tt> using named <tt class="docutils literal"><span class="pre">:name</span></tt> parameters and yields each row.
+
   </dd>
 </div>
 
@@ -1043,7 +1164,7 @@ Raised when whenever a database related error occurs. Errors are typically a res
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-02 13:28:48 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-02 15:05:47 UTC</small>
       </div>
     </div>
   </div>

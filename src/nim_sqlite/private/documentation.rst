@@ -41,6 +41,25 @@ parameter substitution.
         VALUES(?, ?);
     """, "John Doe", 37)
 
+Named parameters
+----------------
+
+For order-independent binding, use SQLite ``:name`` parameters and pass a named tuple. A tuple field named ``name``
+binds ``:name`` regardless of the order of the fields or parameters:
+
+.. code-block:: nim
+
+    db.exec("""
+        UPDATE Person
+        SET age = :age
+        WHERE name = :name
+    """, (name: "John Doe", age: 38))
+
+Named tuples can be used with ``exec``, ``iterate``, ``all``, ``one``, and ``value``, including their prepared-statement
+versions. ``execMany`` accepts an array or sequence of named tuples. Repeated occurrences of a parameter share one
+tuple field. Missing parameters, unknown tuple fields, and positional ``?`` parameters used with a named tuple raise
+``SqliteError``.
+
 Reading data
 ############
 

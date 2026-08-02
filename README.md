@@ -1,11 +1,20 @@
 # nim-sqlite
 
 [![CI](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml/badge.svg)](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml)
+
 [Documentation](https://titanomachy.github.io/nim-sqlite/) · [MIT License](LICENSE)
 
-`nim-sqlite` is a focused, type-safe SQLite library for Nim. It stays close to SQLite instead of presenting a generic database abstraction, while adding safe connection and statement lifecycles, parameter binding, typed values, row unpacking, transactions, and prepared-statement caching.
+`nim-sqlite` is a focused, type-safe SQLite library for Nim. It stays close to SQLite instead of presenting a generic database abstraction, while adding:
 
-The repository and project are named `nim-sqlite`. The Nimble package and importable module are named `nim_sqlite` because Nim identifiers and Nimble package names cannot contain hyphens.
+- safe connection and statement lifecycles
+- typed values
+- parameter binding
+- named parameter binding
+- prepared-statement caching
+- row unpacking
+- transactions
+
+It builds on [nim-sqlite3-abi](https://github.com/arnetheduck/nim-sqlite3-abi), which compiles SQLite's C source into your program. The final host therefore needs neither a separate SQLite installation nor a dynamically linked SQLite library.
 
 ## Why use it?
 
@@ -19,7 +28,7 @@ The repository and project are named `nim-sqlite`. The Nimble package and import
 ## Requirements
 
 - Nim 2.2.10 or newer
-- The SQLite 3 shared library available to your application at runtime
+- A C compiler supported by Nim
 
 ## Installation
 
@@ -87,6 +96,20 @@ echo db.changes # rows changed by the most recent INSERT, UPDATE, or DELETE
 ```
 
 Bound parameters handle quoting and data types correctly. Do not build SQL by interpolating untrusted values into the SQL string.
+
+For order-independent binding, use SQLite `:name` parameters and pass a named tuple. Each tuple field binds the parameter with the same name, regardless of where either one appears:
+
+```nim
+let personName = "Ada"
+let newAge = 37
+
+db.exec(
+  "UPDATE person SET age = :age WHERE name = :name",
+  (name: personName, age: newAge) # Deliberately ordered differently from the SQL.
+)
+```
+
+Named tuples are supported by `exec`, `iterate`, `all`, `one`, and `value`, as well as their prepared-statement counterparts. `execMany` accepts an array or sequence of named tuples. Repeated occurrences of the same parameter, such as `:name = :name`, share one tuple field. Missing parameters, unknown tuple fields, or mixing a named tuple with positional `?` parameters raises `SqliteError`.
 
 Use `execScript` when schema setup or a migration contains several statements. The complete script runs in a transaction:
 
@@ -246,4 +269,4 @@ The tests cover connection lifecycle, queries, transactions, prepared statements
 
 ## License and attribution
 
-`nim-sqlite` is an [MIT-licensed](LICENSE) fork of [tiny_sqlite](https://github.com/GULPF/tiny_sqlite), created by [Oscar Nihlgård](https://github.com/GULPF). The original copyright notice is preserved.
+`nim-sqlite` is an [MIT-licensed](LICENSE) fork of [tiny_sqlite](https://github.com/GULPF/tiny_sqlite), created by [Oscar Nihlgård](https://github.com/GULPF).

@@ -72,6 +72,39 @@ test "db.exec":
         db.exec("DELETE FROM Person WHERE name = ?", "John Persson")
         check db.all(SelectPersons).len == 2
 
+test "db named parameters":
+    withDb:
+        db.exec("""
+            INSERT INTO Person(name, age)
+            VALUES(:name, :age)
+        """, (age: 51, name: "Named Person"))
+
+        let rows = db.all("""
+            SELECT name, age
+            FROM Person
+            WHERE age = :age AND name = :name
+        """, (name: "Named Person", age: 51))
+        check rows.len == 1
+        check rows[0].unpack((string, int)) == ("Named Person", 51)
+
+        check db.value("SELECT :part || :part", (part: "repeat",)).get.strVal ==
+            "repeatrepeat"
+        check db.value("SELECT :myObject || :myResource",
+            (myResource: "Resource", myObject: "Object")).get.strVal ==
+            "ObjectResource"
+        check db.value("SELECT :value", (value: toDbValue("converted"),)).get.strVal ==
+            "converted"
+
+        let cachedSql = "SELECT :first || :second"
+        expect SqliteError:
+            discard db.value(cachedSql, (first: "a",))
+        check db.value(cachedSql, (second: "b", first: "a")).get.strVal == "ab"
+
+        expect SqliteError:
+            discard db.value("SELECT :known", (unknown: "value",))
+        expect SqliteError:
+            discard db.value("SELECT ?", (value: "value",))
+
 test "db.exec trailing comment":
     withDb:
         db.exec("""
@@ -117,6 +150,21 @@ test "db.execMany":
         """, @[toDbValues("John Doe", 23), toDbValues("Jane Doe", 22)])
         let rows = db.all(SelectPersons)
         check rows.len == 4
+
+test "db.execMany named parameters":
+    withDb:
+        db.execMany("""
+            INSERT INTO Person(name, age)
+            VALUES(:name, :age)
+        """, [
+            (age: 23, name: "Named One"),
+            (age: 24, name: "Named Two")
+        ])
+        check db.value("""
+            SELECT COUNT(*)
+            FROM Person
+            WHERE name IN (:first, :second)
+        """, (second: "Named Two", first: "Named One")).get.intVal == 2
 
 test "db.execMany with failure":
     withDb:
@@ -297,6 +345,30 @@ test "stmt.all":
         check rows[0][1].fromDbValue(Option[int]) == none(int)
         stmt.finalize()
 
+test "stmt named parameters":
+    withDb:
+        let insertStmt = db.stmt("""
+            INSERT INTO Person(name, age)
+            VALUES(:name, :age)
+        """)
+        insertStmt.exec((age: 31, name: "Prepared One"))
+        insertStmt.execMany([
+            (age: 32, name: "Prepared Two"),
+            (age: 33, name: "Prepared Three")
+        ])
+        insertStmt.finalize()
+
+        let selectStmt = db.stmt("""
+            SELECT age
+            FROM Person
+            WHERE name = :name
+        """)
+        check selectStmt.value((name: "Prepared One",)).get.intVal == 31
+        expect SqliteError:
+            discard selectStmt.value((unknown: "Prepared One",))
+        check selectStmt.value((name: "Prepared Two",)).get.intVal == 32
+        selectStmt.finalize()
+
 test "stmt.iterate busy":
     withDb:
         let stmt = db.stmt(SelectPersons)
@@ -404,10 +476,13 @@ test "Custom type mapping":
     withDb:
         db.exec("CREATE TABLE Foo(timestamp INTEGER)")
         db.exec("INSERT INTO Foo(timestamp) VALUES(?)", fromUnix(12))
-        let row = db.one("SELECT timestamp FROM Foo")
+        db.exec("INSERT INTO Foo(timestamp) VALUES(:timestamp)",
+            (timestamp: fromUnix(13),))
+        let row = db.one("SELECT timestamp FROM Foo WHERE timestamp = :timestamp",
+            (timestamp: fromUnix(13),))
         check row.isSome
         let (timestamp,) = row.get.unpack((Time,))
-        check timestamp == fromUnix(12)
+        check timestamp == fromUnix(13)
 
 test "Foreign keys":
     withDb:

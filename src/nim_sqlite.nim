@@ -238,33 +238,71 @@ proc `==`*(a, b: DbValue): bool =
 # PStmt
 #
 
+proc bindValue(stmtHandle: ptr abi.sqlite3_stmt, idx: int32, value: DbValue): Rc =
+    case value.kind
+    of sqliteNull:
+        abi.sqlite3_bind_null(stmtHandle, idx)
+    of sqliteInteger:
+        abi.sqlite3_bind_int64(stmtHandle, idx, value.intval)
+    of sqliteReal:
+        abi.sqlite3_bind_double(stmtHandle, idx, value.floatVal)
+    of sqliteText:
+        abi.sqlite3_bind_text(stmtHandle, idx, value.strVal.cstring, value.strVal.len.int32,
+            abi.SQLITE_TRANSIENT)
+    of sqliteBlob:
+        abi.sqlite3_bind_blob(stmtHandle, idx, cast[string](value.blobVal).cstring,
+            value.blobVal.len.int32, abi.SQLITE_TRANSIENT)
+
 proc bindParams(db: DbConn, stmtHandle: ptr abi.sqlite3_stmt, params: varargs[DbValue]): Rc =
     result = abi.SQLITE_OK
-    let expectedParamsLen = abi.sqlite3_bind_parameter_count(stmtHandle) 
+    let expectedParamsLen = abi.sqlite3_bind_parameter_count(stmtHandle)
     if expectedParamsLen != params.len:
         raise newSqliteError("SQL statement contains " & $expectedParamsLen &
             " parameters but only " & $params.len & " was provided.")
 
     var idx = 1'i32
     for value in params:
-        let rc =
-            case value.kind
-            of sqliteNull:
-                abi.sqlite3_bind_null(stmtHandle, idx)
-            of sqliteInteger:
-                abi.sqlite3_bind_int64(stmtHandle, idx, value.intval)
-            of sqliteReal:
-                abi.sqlite3_bind_double(stmtHandle, idx, value.floatVal)
-            of sqliteText:   
-                abi.sqlite3_bind_text(stmtHandle, idx, value.strVal.cstring, value.strVal.len.int32,
-                    abi.SQLITE_TRANSIENT)
-            of sqliteBlob:
-                abi.sqlite3_bind_blob(stmtHandle, idx.int32, cast[string](value.blobVal).cstring,
-                    value.blobVal.len.int32, abi.SQLITE_TRANSIENT)
-
-        if rc notin SqliteRcOk:
-            return rc
+        result = bindValue(stmtHandle, idx, value)
+        if result notin SqliteRcOk:
+            return
         idx.inc
+
+proc bindNamedParams[T: tuple](db: DbConn, stmtHandle: ptr abi.sqlite3_stmt,
+        params: T): Rc =
+    mixin toDbValue
+
+    result = abi.SQLITE_OK
+    let expectedParamsLen = abi.sqlite3_bind_parameter_count(stmtHandle)
+    var bound = newSeq[bool](expectedParamsLen + 1)
+
+    for name, value in fieldPairs(params):
+        let parameterName = ":" & name
+        let idx = abi.sqlite3_bind_parameter_index(stmtHandle, parameterName.cstring)
+        if idx == 0:
+            raise newSqliteError("SQL statement does not contain named parameter '" &
+                parameterName & "'.")
+        if bound[idx]:
+            raise newSqliteError("Named parameter '" & parameterName &
+                "' was provided more than once.")
+
+        let dbValue =
+            when value is DbValue:
+                value
+            else:
+                toDbValue(value)
+        result = bindValue(stmtHandle, idx, dbValue)
+        if result notin SqliteRcOk:
+            return
+        bound[idx] = true
+
+    for idx in 1'i32 .. expectedParamsLen:
+        let parameterName = abi.sqlite3_bind_parameter_name(stmtHandle, idx)
+        if parameterName.isNil:
+            raise newSqliteError("Named parameter binding cannot bind positional parameter " &
+                $idx & ".")
+        if not bound[idx]:
+            raise newSqliteError("No value was provided for named parameter '" &
+                $parameterName & "'.")
 
 proc prepareSql(db: DbConn, sql: string): ptr abi.sqlite3_stmt =
     var tail: cstring
@@ -309,10 +347,9 @@ proc readColumn(stmtHandle: ptr abi.sqlite3_stmt, col: int32): DbValue =
     else:
         raiseAssert "Unexpected column type: " & $columnType
 
-iterator iterate(db: DbConn, stmtOrHandle: ptr abi.sqlite3_stmt | SqlStatement, params: varargs[DbValue],
+iterator iterateRows(db: DbConn, stmtOrHandle: ptr abi.sqlite3_stmt | SqlStatement,
         errorRc: var int32): ResultRow =
     let stmtHandle = when stmtOrHandle is ptr abi.sqlite3_stmt: stmtOrHandle else: stmtOrHandle.handle
-    errorRc = db.bindParams(stmtHandle, params)
     if errorRc in SqliteRcOk:
         var rowLen = abi.sqlite3_column_count(stmtHandle)
         var columns = newSeq[string](rowLen)
@@ -335,6 +372,21 @@ iterator iterate(db: DbConn, stmtOrHandle: ptr abi.sqlite3_stmt | SqlStatement, 
                 errorRc = rc
                 break
 
+iterator iteratePositional(db: DbConn, stmtOrHandle: ptr abi.sqlite3_stmt | SqlStatement,
+        params: varargs[DbValue], errorRc: var int32): ResultRow =
+    let stmtHandle = when stmtOrHandle is ptr abi.sqlite3_stmt: stmtOrHandle else: stmtOrHandle.handle
+    errorRc = db.bindParams(stmtHandle, params)
+    for row in db.iterateRows(stmtOrHandle, errorRc):
+        yield row
+
+iterator iterateNamed[T: tuple](db: DbConn,
+        stmtOrHandle: ptr abi.sqlite3_stmt | SqlStatement, params: T,
+        errorRc: var int32): ResultRow =
+    let stmtHandle = when stmtOrHandle is ptr abi.sqlite3_stmt: stmtOrHandle else: stmtOrHandle.handle
+    errorRc = db.bindNamedParams(stmtHandle, params)
+    for row in db.iterateRows(stmtOrHandle, errorRc):
+        yield row
+
 #
 # DbConn
 #
@@ -353,6 +405,28 @@ proc exec*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]) =
         resetStmt(stmtHandle)
     else:
         discard abi.sqlite3_finalize(stmtHandle)
+    db.checkRc(rc)
+
+proc exec*[T: tuple](db: DbConn, sql: string, params: T) =
+    ## Executes ``sql`` using a named tuple whose field names correspond to
+    ## ``:name`` parameters. Tuple field order does not affect binding.
+    runnableExamples:
+        let db = openDatabase(":memory:")
+        db.exec("CREATE TABLE Person(name, age)")
+        db.exec("INSERT INTO Person(name, age) VALUES(:name, :age)",
+            (age: 23, name: "John Doe"))
+    assertCanUseDb db
+    let stmtHandle = db.prepareSql(sql)
+    var rc: Rc = abi.SQLITE_OK
+    try:
+        rc = db.bindNamedParams(stmtHandle, params)
+        if rc in SqliteRcOk:
+            rc = abi.sqlite3_step(stmtHandle)
+    finally:
+        if db.hasCache:
+            resetStmt(stmtHandle)
+        else:
+            discard abi.sqlite3_finalize(stmtHandle)
     db.checkRc(rc)
 
 template transaction*(db: DbConn, body: untyped) =
@@ -382,6 +456,14 @@ proc execMany*(db: DbConn, sql: string, params: seq[seq[DbValue]]) =
         for p in params:
             db.exec(sql, p)
 
+proc execMany*[T: tuple](db: DbConn, sql: string, params: openArray[T]) =
+    ## Executes ``sql`` repeatedly using named tuples as parameters. Tuple
+    ## field names correspond to ``:name`` parameters.
+    assertCanUseDb db
+    db.transaction:
+        for p in params:
+            db.exec(sql, p)
+
 proc execScript*(db: DbConn, sql: string) =
     ## Executes ``sql``, which can consist of multiple SQL statements.
     ## The statements are executed inside a transaction.
@@ -406,11 +488,28 @@ iterator iterate*(db: DbConn, sql: string,
     let stmtHandle = db.prepareSql(sql, @params)
     var errorRc: int32
     try:
-        for row in db.iterate(stmtHandle, params, errorRc):
+        for row in db.iteratePositional(stmtHandle, params, errorRc):
             yield row
     finally:
         # The database might have been closed while iterating, in which
         # case we don't need to clean up the statement.
+        if not db.handle.isNil:
+            if db.hasCache:
+                resetStmt(stmtHandle)
+            else:
+                discard abi.sqlite3_finalize(stmtHandle)
+        db.checkRc(errorRc)
+
+iterator iterate*[T: tuple](db: DbConn, sql: string, params: T): ResultRow =
+    ## Executes ``sql`` using named ``:name`` parameters and yields each
+    ## result row. Tuple field order does not affect binding.
+    assertCanUseDb db
+    let stmtHandle = db.prepareSql(sql)
+    var errorRc: int32
+    try:
+        for row in db.iterateNamed(stmtHandle, params, errorRc):
+            yield row
+    finally:
         if not db.handle.isNil:
             if db.hasCache:
                 resetStmt(stmtHandle)
@@ -424,6 +523,11 @@ proc all*(db: DbConn, sql: string,
     for row in db.iterate(sql, params):
         result.add row
 
+proc all*[T: tuple](db: DbConn, sql: string, params: T): seq[ResultRow] =
+    ## Executes ``sql`` using named ``:name`` parameters and returns all rows.
+    for row in db.iterate(sql, params):
+        result.add row
+
 proc one*(db: DbConn, sql: string,
         params: varargs[DbValue, toDbValue]): Option[ResultRow] =
     ## Executes `sql`, which must be a single SQL statement, and returns the first result row.
@@ -431,10 +535,21 @@ proc one*(db: DbConn, sql: string,
     for row in db.iterate(sql, params):
         return some(row)
 
+proc one*[T: tuple](db: DbConn, sql: string, params: T): Option[ResultRow] =
+    ## Executes ``sql`` using named ``:name`` parameters and returns the first row.
+    for row in db.iterate(sql, params):
+        return some(row)
+
 proc value*(db: DbConn, sql: string,
         params: varargs[DbValue, toDbValue]): Option[DbValue] =
     ## Executes `sql`, which must be a single SQL statement, and returns the first column of the first result row.
     ## Returns `none(DbValue)` if the result was empty.
+    for row in db.iterate(sql, params):
+        return some(row.values[0])
+
+proc value*[T: tuple](db: DbConn, sql: string, params: T): Option[DbValue] =
+    ## Executes ``sql`` using named ``:name`` parameters and returns the first
+    ## column of the first row.
     for row in db.iterate(sql, params):
         return some(row.values[0])
 
@@ -531,9 +646,29 @@ proc exec*(statement: SqlStatement, params: varargs[DbValue, toDbValue]) =
         resetStmt(statement.handle)
         statement.db.checkRc(rc)
 
+proc exec*[T: tuple](statement: SqlStatement, params: T) =
+    ## Executes `statement` using named ``:name`` parameters. Tuple field
+    ## order does not affect binding.
+    assertCanUseStatement statement
+    var rc: Rc = abi.SQLITE_OK
+    try:
+        rc = statement.db.bindNamedParams(statement.handle, params)
+        if rc in SqliteRcOk:
+            rc = abi.sqlite3_step(statement.handle)
+    finally:
+        resetStmt(statement.handle)
+    statement.db.checkRc(rc)
+
 proc execMany*(statement: SqlStatement, params: seq[seq[DbValue]]) =
     ## Executes ``statement`` repeatedly using each element of ``params`` as parameters.
     ## The statements are executed inside a transaction.
+    assertCanUseStatement statement
+    statement.db.transaction:
+        for p in params:
+            statement.exec(p)
+
+proc execMany*[T: tuple](statement: SqlStatement, params: openArray[T]) =
+    ## Executes `statement` repeatedly using named tuples as parameters.
     assertCanUseStatement statement
     statement.db.transaction:
         for p in params:
@@ -544,7 +679,7 @@ iterator iterate*(statement: SqlStatement, params: varargs[DbValue, toDbValue]):
     assertCanUseStatement statement
     var errorRc: int32
     try:
-        for row in statement.db.iterate(statement, params, errorRc):
+        for row in statement.db.iteratePositional(statement, params, errorRc):
             yield row
     finally:
         # The database might have been closed while iterating, in which
@@ -553,8 +688,26 @@ iterator iterate*(statement: SqlStatement, params: varargs[DbValue, toDbValue]):
             resetStmt(statement.handle)
         statement.db.checkRc errorRc
 
+iterator iterate*[T: tuple](statement: SqlStatement, params: T): ResultRow =
+    ## Executes `statement` using named ``:name`` parameters and yields each row.
+    assertCanUseStatement statement
+    var errorRc: int32
+    try:
+        for row in statement.db.iterateNamed(statement, params, errorRc):
+            yield row
+    finally:
+        if statement.isAlive:
+            resetStmt(statement.handle)
+        statement.db.checkRc errorRc
+
 proc all*(statement: SqlStatement, params: varargs[DbValue, toDbValue]): seq[ResultRow] =
     ## Executes ``statement`` and returns all result rows.
+    assertCanUseStatement statement
+    for row in statement.iterate(params):
+        result.add row
+
+proc all*[T: tuple](statement: SqlStatement, params: T): seq[ResultRow] =
+    ## Executes `statement` using named ``:name`` parameters and returns all rows.
     assertCanUseStatement statement
     for row in statement.iterate(params):
         result.add row
@@ -567,10 +720,23 @@ proc one*(statement: SqlStatement,
     for row in statement.iterate(params):
         return some(row)
 
+proc one*[T: tuple](statement: SqlStatement, params: T): Option[ResultRow] =
+    ## Executes `statement` using named ``:name`` parameters and returns the first row.
+    assertCanUseStatement statement
+    for row in statement.iterate(params):
+        return some(row)
+
 proc value*(statement: SqlStatement,
         params: varargs[DbValue, toDbValue]): Option[DbValue] =
     ## Executes `statement` and returns the first column of the first row found. 
     ## Returns `none(DbValue)` if no result was found.
+    assertCanUseStatement statement
+    for row in statement.iterate(params):
+        return some(row.values[0])
+
+proc value*[T: tuple](statement: SqlStatement, params: T): Option[DbValue] =
+    ## Executes `statement` using named ``:name`` parameters and returns the
+    ## first column of the first row.
     assertCanUseStatement statement
     for row in statement.iterate(params):
         return some(row.values[0])
