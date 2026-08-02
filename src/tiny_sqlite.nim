@@ -69,6 +69,7 @@ const SqliteRcOk = [ abi.SQLITE_OK, abi.SQLITE_DONE, abi.SQLITE_ROW ]
 # Forward declarations
 proc isInTransaction*(db: DbConn): bool {.noSideEffect.}
 proc isOpen*(db: DbConn): bool {.noSideEffect, inline.}
+proc isAlive*(statement: SqlStatement): bool {.noSideEffect.}
 
 template handle(db: DbConn): ptr abi.sqlite3 = DbConnImpl(db).handle
 template handle(statement: SqlStatement): ptr abi.sqlite3_stmt = SqlStatementImpl(statement).handle
@@ -135,6 +136,10 @@ proc skipLeadingWhiteSpaceAndComments(sql: var cstring) =
         else:
             return
 
+proc resetStmt(stmtHandle: sqlite.Stmt) =
+    discard sqlite.reset(stmtHandle)
+    discard sqlite.clear_bindings(stmtHandle)
+
 #
 # DbValue
 #
@@ -174,7 +179,7 @@ proc toDbValues*(values: varargs[DbValue, toDbValue]): seq[DbValue] =
 
 proc fromDbValue*(value: DbValue, T: typedesc[Ordinal]): T =
     # Convert a DbValue to an ordinal.
-    value.intval.T
+    value.intVal.T
 
 proc fromDbValue*(value: DbValue, T: typedesc[SomeFloat]): float64 =
     ## Convert a DbValue to a float.

@@ -1,2 +1,6 @@
 nimcache/
 .vscode/
+nimble.develop
+nimble.paths
+nimbledeps
+build/
