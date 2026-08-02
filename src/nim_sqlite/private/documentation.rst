@@ -1,6 +1,6 @@
-***********
-tiny_sqlite
-***********
+**********
+nim_sqlite
+**********
 
 Opening a database connection.
 ##############################
@@ -53,7 +53,7 @@ Four different procedures for reading data are available:
 
 Note that the procedures `one` and `value` returns the result wrapped in an `Option`. See the standard library
 `options module <https://nim-lang.org/docs/options.html>`_ for documentation on how to deal with `Option` values.
-For convenience the `tiny_sqlite` module exports the `options.get`, `options.isSome`, and `options.isNone` procedures so the options
+For convenience the `nim_sqlite` module exports the `options.get`, `options.isSome`, and `options.isNone` procedures so the options
 module doesn't need to be explicitly imported for typical usage.
 
 .. code-block:: nim
@@ -101,7 +101,7 @@ Transactions
 ############
 
 The procedures that can execute multiple SQL statements (`execScript` and `execMany`) are wrapped in a transaction by
-`tiny_sqlite`. Transactions can also be controlled manually by using one of these two options:
+`nim_sqlite`. Transactions can also be controlled manually by using one of these two options:
 
 - Option 1: using the `transaction <#transaction.t,DbConn,untyped>`_ template
 
@@ -129,7 +129,7 @@ Prepared statements
 ###################
 
 All the procedures for executing SQL described above create and execute prepared statements internally. In addition to
-those procedures, ``tiny_sqlite`` also offers an API for preparing SQL statements explicitly. Prepared statements are
+those procedures, ``nim_sqlite`` also offers an API for preparing SQL statements explicitly. Prepared statements are
 created with the `stmt <#stmt,DbConn,string>`_ procedure, and the same procedures for executing SQL that are available
 directly on the connection object are also available for the prepared statement:
 
@@ -143,8 +143,8 @@ directly on the connection object are also available for the prepared statement:
     stmt.finalize()
 
 There are performance benefits of reusing prepared statements, since the preparation only needs to be done once.
-However, `tiny_sqlite` keeps an internal cache of prepared statements, so it's typically not necesarry to manage
-prepared statements manually. If you prefer if `tiny_sqlite` doesn't perform this caching, you can disable it by
+However, `nim_sqlite` keeps an internal cache of prepared statements, so it's typically not necesarry to manage
+prepared statements manually. If you prefer if `nim_sqlite` doesn't perform this caching, you can disable it by
 setting the `cacheSize` parameter when opening the database:
 
 .. code-block:: nim

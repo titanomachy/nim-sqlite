@@ -1,6 +1,6 @@
 import std / [unittest, options, sequtils, times]
-import .. / src / tiny_sqlite
-from tiny_sqlite / sqlite3_abi as abi import nil
+import nim_sqlite
+from nim_sqlite / sqlite3_abi as abi import nil
 
 const SelectPersons = "SELECT name, age FROM Person"
 const SelectJohnDoe = "SELECT name, age FROM Person WHERE name = 'John Doe'"

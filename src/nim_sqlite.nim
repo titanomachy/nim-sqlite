@@ -1,8 +1,8 @@
-## .. include:: ./tiny_sqlite/private/documentation.rst
+## .. include:: ./nim_sqlite/private/documentation.rst
 
 import std / [options, typetraits, sequtils]
 from pkg / sqlite3_abi as abi import nil
-import tiny_sqlite / private / stmtcache
+import nim_sqlite / private / stmtcache
 
 when not declared(tupleLen):
     import macros

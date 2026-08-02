@@ -1,8 +1,8 @@
 # Package
 
 version       = "0.2.0"
-author        = "titanomachy"
-description   = "A thin SQLite wrapper"
+author        = "Oscar Nihlgård (original author), titanomachy (fork maintainer)"
+description   = "A thin, type-safe SQLite wrapper for Nim"
 license       = "MIT"
 srcDir        = "src"
 binDir        = "build"
@@ -16,4 +16,4 @@ task test, "Run tests":
     exec "nim c -r --nimcache:build/nimcache/tests --out:build/tests tests/tests"
 
 task docs, "Generate docs":
-    exec "nim doc -o:docs/tiny_sqlite.html src/tiny_sqlite.nim"
+    exec "nim doc -o:docs/nim_sqlite.html src/nim_sqlite.nim"

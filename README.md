@@ -1,25 +1,29 @@
-# nim-sqlite ![CI](https://github.com/GULPF/nimquery/workflows/CI/badge.svg)
+# nim-sqlite [![CI](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml/badge.svg)](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml)
 
-`tiny_sqlite` is a comparatively thin wrapper for the SQLite database library. It differs from the standard library module `std/db_sqlite` in several ways:
+`nim-sqlite` is a comparatively thin, type-safe wrapper for the SQLite database library. The Nim module is named `nim_sqlite` because Nimble package and Nim module names cannot contain hyphens.
 
-- `tiny_sqlite` represents database values with a typesafe case object called `DbValue` instead of treating every value as a string, which among other things means that SQLite `NULL` values can be properly supported.
+It differs from the standard library module `std/db_sqlite` in several ways:
 
-- `tiny_sqlite` is not designed as a generic database API, only SQLite will ever be supported. The database modules in the standard library are built with replaceability in mind so that the code might work with several different database engines just by replacing an import. This is not the case for `tiny_sqlite`.
+- `nim_sqlite` represents database values with a type-safe case object called `DbValue` instead of treating every value as a string. Among other things, this means that SQLite `NULL` values can be properly supported.
 
-- `tiny_sqlite` is safe. Unlike `std/db_sqlite` the raw SQLite handles are not used directly to prevent use-after-free bugs triggering undefined behavior.
+- `nim_sqlite` is designed specifically for SQLite, rather than as a generic database API. The standard library database modules are designed so an application may support several database engines by replacing an import; this library deliberately does not make that tradeoff.
+
+- `nim_sqlite` wraps raw SQLite handles to prevent use-after-free bugs from triggering undefined behavior, unlike direct use of `std/db_sqlite` handles.
 
 ## Installation
 
-`tiny_sqlite` is available on Nimble:
+Install the package from this repository:
 
+```sh
+nimble install https://github.com/titanomachy/nim-sqlite
 ```
-nimble install tiny_sqlite
-```
+
+The Nimble package name is `nim_sqlite`.
 
 ## Usage
 
 ```nim
-import tiny_sqlite, std / options
+import nim_sqlite, std / options
 
 let db = openDatabase(":memory:")
 db.execScript("""
@@ -47,6 +51,10 @@ for row in db.iterate("SELECT name, age FROM Person"):
 
 ## Documentation
 
-- [Documentation available here](https://gulpf.github.io/tiny_sqlite/tiny_sqlite.html).
+- [Generated API documentation](docs/nim_sqlite.html)
 
+## Upstream and license
 
+This project is a fork of [tiny_sqlite](https://github.com/GULPF/tiny_sqlite), originally created by [Oscar Nihlgård](https://github.com/GULPF). His authorship is retained in the package metadata and in the repository history.
+
+The library remains available under the MIT License. See [LICENSE](LICENSE), which retains Oscar Nihlgård's original copyright notice and the complete license text.
