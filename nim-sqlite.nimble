@@ -1,14 +1,15 @@
 # Package
 
 version       = "0.2.0"
-author        = "Oscar Nihlgård"
+author        = "titanomachy"
 description   = "A thin SQLite wrapper"
 license       = "MIT"
 srcDir        = "src"
 binDir        = "build"
 
 # Dependencies
-requires "nim >= 2.2.10", "sqlite3_abi"
+requires "nim >= 2.2.10"
+requires "sqlite3_abi"
 
 task test, "Run tests":
     mkDir binDir

@@ -1,4 +1,4 @@
-# tiny_sqlite ![CI](https://github.com/GULPF/nimquery/workflows/CI/badge.svg)
+# nim-sqlite ![CI](https://github.com/GULPF/nimquery/workflows/CI/badge.svg)
 
 `tiny_sqlite` is a comparatively thin wrapper for the SQLite database library. It differs from the standard library module `std/db_sqlite` in several ways:
 
