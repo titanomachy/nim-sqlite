@@ -244,8 +244,6 @@ nimble test -Y
 
 The tests cover connection lifecycle, queries, transactions, prepared statements, caching, type conversion, extensions, and foreign keys.
 
-## Upstream and license
+## License and attribution
 
-This project is a fork of [tiny_sqlite](https://github.com/GULPF/tiny_sqlite), originally created by [Oscar Nihlgård](https://github.com/GULPF). His authorship is retained in the package metadata, license, and repository history.
-
-`nim-sqlite` is distributed under the [MIT License](LICENSE). The original copyright notice and complete license text are retained.
+`nim-sqlite` is an [MIT-licensed](LICENSE) fork of [tiny_sqlite](https://github.com/GULPF/tiny_sqlite), created by [Oscar Nihlgård](https://github.com/GULPF). The original copyright notice is preserved.
