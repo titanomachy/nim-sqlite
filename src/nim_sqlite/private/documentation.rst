@@ -184,6 +184,12 @@ setting the `cacheSize` parameter when opening the database:
 
     let db = openDatabase(":memory:", cacheSize = 0)
 
+Cached statements are leased to one connection-level operation at a time. If nested or reentrant code requests SQL
+whose cached statement is already leased or busy, ``nim_sqlite`` prepares a temporary statement and finalizes it
+afterward. Cache eviction skips leased and busy statements. This keeps nested queries independent, including when the
+same SQL is used with different parameters. Explicit statements created with ``stmt`` reject reentrant use while they
+are executing.
+
 Supported types
 ###############
 

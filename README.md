@@ -221,6 +221,8 @@ The transaction commits when the block finishes normally and rolls back when an 
 
 Normal connection methods automatically cache recently prepared SQL statements. The default cache holds 100 statements, so manual statement management is usually unnecessary. Set `cacheSize = 0` when opening a database to disable the cache.
 
+Cached statements are leased to one connection-level operation at a time. If nested or reentrant code executes SQL whose cached statement is already leased or busy, the operation uses a temporary statement and finalizes it afterward. Cache eviction also skips leased and busy statements. This keeps nested queries independent, including when they use the same SQL with different parameters. Explicit statements created with `stmt` are single-use while executing and reject reentrant use.
+
 For explicit reuse, prepare and finalize a statement yourself:
 
 ```nim

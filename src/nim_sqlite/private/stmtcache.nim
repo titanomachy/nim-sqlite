@@ -8,6 +8,7 @@ type
   Node = object
     key: string
     val: ptr abi.sqlite3_stmt
+    leased: bool
 
   StmtCache* = object 
     capacity: int
@@ -21,13 +22,6 @@ proc initStmtCache*(capacity: Natural): StmtCache =
     list: initDoublyLinkedList[Node](),
     table: initTable[string, DoublyLinkedNode[Node]](capacity)
   )
-
-proc resize(cache: var StmtCache) =
-  while cache.table.len > cache.capacity:
-    let t = cache.list.tail
-    cache.table.del(t.value.key)
-    discard abi.sqlite3_finalize(t.value.val)
-    cache.list.remove t
 
 proc capacity*(cache: StmtCache): int = 
   ## Get the maximum capacity of cache
@@ -56,31 +50,46 @@ proc `[]`*(cache: var StmtCache, key: string): ptr abi.sqlite3_stmt =
   cache.list.remove node
   cache.list.prepend node
 
-proc `[]=`*(cache: var StmtCache, key: string, val: ptr abi.sqlite3_stmt) =
-  ## Put value `v` in cache with key `k`.
-  ## Remove least recently used value from cache if length exceeds capacity.
-  var node = cache.table.getOrDefault(key, nil)
-  if node.isNil:
-    let node = newDoublyLinkedNode[Node](
-      Node(key: key, val: val)
-    )
-    cache.table[key] = node
-    cache.list.prepend node
-    cache.resize()
-  else:
-    # Replacing an entry transfers ownership of the new statement to the
-    # cache, so release the statement that was previously owned here.
-    if node.value.val != val:
-      discard abi.sqlite3_finalize(node.value.val)
-    node.value.val = val
-    # move to head
-    cache.list.remove node
-    cache.list.prepend node
-    
-proc getOrDefault*(cache: StmtCache, key: string, val: ptr abi.sqlite3_stmt = nil): ptr abi.sqlite3_stmt =
-  ## Similar to get, but return `val` if `key` is not in `cache`
+proc tryAcquire*(cache: var StmtCache, key: string): ptr abi.sqlite3_stmt =
+  ## Tries to lease the cached statement for ``key``. Returns nil when the key
+  ## is absent or its statement is already leased or busy.
   let node = cache.table.getOrDefault(key, nil)
-  if node.isNil:
-    result = val
-  else:
-    result = node.value.val
+  if node.isNil or node.value.leased or abi.sqlite3_stmt_busy(node.value.val) != 0:
+    return nil
+  node.value.leased = true
+  cache.list.remove node
+  cache.list.prepend node
+  node.value.val
+
+proc release*(cache: var StmtCache, key: string, val: ptr abi.sqlite3_stmt) =
+  ## Returns a leased statement to the cache.
+  let node = cache.table.getOrDefault(key, nil)
+  doAssert not node.isNil and node.value.val == val and node.value.leased,
+    "Attempted to release a statement that is not leased from this cache"
+  node.value.leased = false
+
+proc tryAdd*(cache: var StmtCache, key: string,
+    val: ptr abi.sqlite3_stmt, leased = false): bool =
+  ## Tries to transfer ownership of ``val`` to the cache. If the cache is full,
+  ## the least-recently-used idle statement is evicted. Leased and busy
+  ## statements are never evicted. Returns false, leaving ownership with the
+  ## caller, when the key is already cached or every possible eviction candidate
+  ## is leased or busy.
+  if cache.table.contains(key) or cache.capacity == 0:
+    return false
+
+  if cache.table.len >= cache.capacity:
+    var candidate = cache.list.tail
+    while not candidate.isNil and (candidate.value.leased or
+        abi.sqlite3_stmt_busy(candidate.value.val) != 0):
+      candidate = candidate.prev
+    if candidate.isNil:
+      return false
+    cache.table.del(candidate.value.key)
+    discard abi.sqlite3_finalize(candidate.value.val)
+    cache.list.remove candidate
+
+  let node = newDoublyLinkedNode[Node](Node(key: key, val: val, leased: leased))
+  cache.table[key] = node
+  cache.list.prepend node
+  true

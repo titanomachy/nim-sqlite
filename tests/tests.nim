@@ -11,6 +11,19 @@ proc writePersons(db: DbConn) {.used.} =
         let (name, age) = row.unpack(SelectPersonsRowType)
         echo name, "\t", age
 
+proc preparedStatementCount(db: DbConn): int =
+    var statement = abi.sqlite3_next_stmt(db.unsafeHandle, nil)
+    while not statement.isNil:
+        result.inc
+        statement = abi.sqlite3_next_stmt(db.unsafeHandle, statement)
+
+type ReentrantParam = object
+    db: DbConn
+
+proc toDbValue(value: ReentrantParam): DbValue =
+    discard value.db.one("SELECT :first, :second", (first: 100, second: 200))
+    toDbValue(22)
+
 const seedScript = staticRead("./seed_test_db.sql")
 
 template withDb(body: untyped) =
@@ -38,6 +51,65 @@ test "db.all with break":
             break
         for row in db.all("SELECT name, age FROM Person WHERE name = ?", "John Doe"):
             break
+
+test "db cached statement same-SQL reentrancy":
+    withDb:
+        const sql = "SELECT id FROM Person ORDER BY id"
+        let statementsBefore = db.preparedStatementCount
+        var outerIds: seq[int64]
+        for outerRow in db.iterate(sql):
+            outerIds.add outerRow[0].intVal
+            check db.one(sql).get[0].intVal == 1
+            # Keep this regression bounded if a cache reset accidentally
+            # restarts the outer query again.
+            if outerIds.len > 3:
+                break
+        check outerIds == @[1'i64, 2'i64]
+        check db.preparedStatementCount == statementsBefore + 1
+
+test "db cached statement reentrant parameters are independent":
+    withDb:
+        const positionalSql = "SELECT id FROM Person WHERE id >= ? ORDER BY id"
+        let statementsBefore = db.preparedStatementCount
+        var positionalIds: seq[int64]
+        for outerRow in db.iterate(positionalSql, 1):
+            positionalIds.add outerRow[0].intVal
+            check db.one(positionalSql, 2).get[0].intVal == 2
+        check positionalIds == @[1'i64, 2'i64]
+        check db.preparedStatementCount == statementsBefore + 1
+
+        const namedSql = "SELECT id FROM Person WHERE id >= :minimum ORDER BY id"
+        var namedIds: seq[int64]
+        for outerRow in db.iterate(namedSql, (minimum: 1,)):
+            namedIds.add outerRow[0].intVal
+            check db.one(namedSql, (minimum: 2,)).get[0].intVal == 2
+        check namedIds == @[1'i64, 2'i64]
+        check db.preparedStatementCount == statementsBefore + 2
+
+test "db statement lease begins before named parameter conversion":
+    withDb:
+        const sql = "SELECT :first, :second"
+        let statementsBefore = db.preparedStatementCount
+        let row = db.one(sql, (first: 11, second: ReentrantParam(db: db))).get
+        check row[0].intVal == 11
+        check row[1].intVal == 22
+        check db.preparedStatementCount == statementsBefore + 1
+
+test "db cache does not evict a busy statement":
+    let db = openDatabase(":memory:", cacheSize = 1)
+    try:
+        db.execScript(seedScript)
+        const outerSql = "SELECT id FROM Person ORDER BY id"
+        var outerIds: seq[int64]
+        for outerRow in db.iterate(outerSql):
+            outerIds.add outerRow[0].intVal
+            check db.value("SELECT COUNT(*) FROM Person").get.intVal == 2
+            if outerIds.len > 3:
+                break
+        check outerIds == @[1'i64, 2'i64]
+        check db.preparedStatementCount == 1
+    finally:
+        db.close()
 
 test "db.iterate close":
     withDb:

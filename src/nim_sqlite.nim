@@ -58,6 +58,11 @@ type
 
     Rc = cint
 
+    StmtLease = object
+        handle: ptr abi.sqlite3_stmt
+        cached: bool
+        key: string
+
     ResultRow* = object
         values: seq[DbValue]
         columns: seq[string]
@@ -314,17 +319,32 @@ proc prepareSql(db: DbConn, sql: string): ptr abi.sqlite3_stmt =
         "Only single SQL statement is allowed in this context. " &
         "To execute several SQL statements, use 'execScript'"
 
-proc prepareSql(db: DbConn, sql: string, params: seq[DbValue]): ptr abi.sqlite3_stmt
-        {.raises: [SqliteError].} =
+proc acquireStmt(db: DbConn, sql: string): StmtLease =
     if db.hasCache:
-        result = db.cache.getOrDefault(sql)
-        if result.isNil:
-            result = prepareSql(db, sql)
-            db.cache[sql] = result
+        let cachedHandle = db.cache.tryAcquire(sql)
+        if not cachedHandle.isNil:
+            return StmtLease(handle: cachedHandle, cached: true, key: sql)
+
+    result.handle = db.prepareSql(sql)
+    if db.hasCache:
+        result.cached = db.cache.tryAdd(sql, result.handle, leased = true)
+        if result.cached:
+            result.key = sql
+
+proc releaseStmt(db: DbConn, lease: var StmtLease) =
+    if lease.handle.isNil:
+        return
+    if lease.cached:
+        # Closing the database finalizes all cache-owned statements. If the
+        # database is still open, return this lease to the cache in clean state.
+        if db.isOpen:
+            resetStmt(lease.handle)
+            db.cache.release(lease.key, lease.handle)
     else:
-        result = prepareSql(db, sql)
-    let rc = db.bindParams(result, params)
-    db.checkRc(rc)
+        # Temporary leases retain ownership across sqlite3_close_v2 and must
+        # always be finalized by the operation that acquired them.
+        discard abi.sqlite3_finalize(lease.handle)
+    lease.handle = nil
 
 proc readColumn(stmtHandle: ptr abi.sqlite3_stmt, col: int32): DbValue =
     let columnType = abi.sqlite3_column_type(stmtHandle, col)
@@ -399,12 +419,14 @@ proc exec*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]) =
         db.exec("INSERT INTO Person(name, age) VALUES(?, ?)",
             "John Doe", 23)
     assertCanUseDb db
-    let stmtHandle = db.prepareSql(sql, @params)
-    let rc = abi.sqlite3_step(stmtHandle)
-    if db.hasCache:
-        resetStmt(stmtHandle)
-    else:
-        discard abi.sqlite3_finalize(stmtHandle)
+    var lease = db.acquireStmt(sql)
+    var rc: Rc = abi.SQLITE_OK
+    try:
+        rc = db.bindParams(lease.handle, params)
+        if rc in SqliteRcOk:
+            rc = abi.sqlite3_step(lease.handle)
+    finally:
+        db.releaseStmt(lease)
     db.checkRc(rc)
 
 proc exec*[T: tuple](db: DbConn, sql: string, params: T) =
@@ -416,17 +438,14 @@ proc exec*[T: tuple](db: DbConn, sql: string, params: T) =
         db.exec("INSERT INTO Person(name, age) VALUES(:name, :age)",
             (age: 23, name: "John Doe"))
     assertCanUseDb db
-    let stmtHandle = db.prepareSql(sql)
+    var lease = db.acquireStmt(sql)
     var rc: Rc = abi.SQLITE_OK
     try:
-        rc = db.bindNamedParams(stmtHandle, params)
+        rc = db.bindNamedParams(lease.handle, params)
         if rc in SqliteRcOk:
-            rc = abi.sqlite3_step(stmtHandle)
+            rc = abi.sqlite3_step(lease.handle)
     finally:
-        if db.hasCache:
-            resetStmt(stmtHandle)
-        else:
-            discard abi.sqlite3_finalize(stmtHandle)
+        db.releaseStmt(lease)
     db.checkRc(rc)
 
 template transaction*(db: DbConn, body: untyped) =
@@ -484,36 +503,26 @@ proc execScript*(db: DbConn, sql: string) =
 iterator iterate*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): ResultRow =
     ## Executes ``sql``, which must be a single SQL statement, and yields each result row one by one.
     assertCanUseDb db
-    let stmtHandle = db.prepareSql(sql, @params)
-    var errorRc: int32
+    var lease = db.acquireStmt(sql)
+    var errorRc: int32 = abi.SQLITE_OK
     try:
-        for row in db.iteratePositional(stmtHandle, params, errorRc):
+        for row in db.iteratePositional(lease.handle, params, errorRc):
             yield row
     finally:
-        # The database might have been closed while iterating, in which
-        # case we don't need to clean up the statement.
-        if not db.handle.isNil:
-            if db.hasCache:
-                resetStmt(stmtHandle)
-            else:
-                discard abi.sqlite3_finalize(stmtHandle)
+        db.releaseStmt(lease)
         db.checkRc(errorRc)
 
 iterator iterate*[T: tuple](db: DbConn, sql: string, params: T): ResultRow =
     ## Executes ``sql`` using named ``:name`` parameters and yields each
     ## result row. Tuple field order does not affect binding.
     assertCanUseDb db
-    let stmtHandle = db.prepareSql(sql)
-    var errorRc: int32
+    var lease = db.acquireStmt(sql)
+    var errorRc: int32 = abi.SQLITE_OK
     try:
-        for row in db.iterateNamed(stmtHandle, params, errorRc):
+        for row in db.iterateNamed(lease.handle, params, errorRc):
             yield row
     finally:
-        if not db.handle.isNil:
-            if db.hasCache:
-                resetStmt(stmtHandle)
-            else:
-                discard abi.sqlite3_finalize(stmtHandle)
+        db.releaseStmt(lease)
         db.checkRc(errorRc)
 
 proc all*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): seq[ResultRow] =
@@ -766,6 +775,11 @@ proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): 
     ##
     ## NOTE: To avoid memory leaks, ``db.close`` must be called when the
     ## database connection is no longer needed.
+    ##
+    ## Connection-level operations lease cached statements exclusively. If a
+    ## cached statement is already leased or busy during nested or reentrant
+    ## execution, a temporary statement is used and finalized after that
+    ## operation. Leased and busy statements are not evicted from the cache.
     runnableExamples:
         let memDb = openDatabase(":memory:")
     var handle: ptr abi.sqlite3
