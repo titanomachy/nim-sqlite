@@ -83,7 +83,7 @@ Ada: some(36)
 Grace: none(int)
 ```
 
-Always close a connection when it is no longer needed. A `try`/`finally` block is a convenient way to guarantee that cleanup.
+Always close a connection when it is no longer needed. A `try`/`finally` block is a convenient way to guarantee that cleanup. Closing a connection finalizes the statements in its internal cache. Explicit statements created with `stmt` have their own lifecycle and must be finalized separately.
 
 ## Executing SQL safely
 
@@ -235,6 +235,18 @@ finally:
 
 Prepared statements provide the same `exec`, `execMany`, `iterate`, `all`, `one`, and `value` operations as a connection.
 
+An explicit statement owns its underlying SQLite statement handle. Closing its database connection makes the statement unusable for further execution, but does not finalize that handle. The statement must still be finalized afterward:
+
+```nim
+let statement = db.stmt("SELECT name FROM person")
+
+db.close()
+doAssert not statement.isAlive
+statement.finalize() # Safe and required after the connection is closed.
+```
+
+Connection shutdown uses SQLite's deferred-close behavior. SQLite releases the underlying connection after all explicit statements have been finalized. Prefer finalizing statements before closing their connection when practical; post-close finalization exists to make cleanup ordering safe.
+
 ## Opening modes
 
 ```nim
@@ -243,7 +255,7 @@ let writableDb = openDatabase("application.db")             # dbReadWrite
 let readonlyDb = openDatabase("application.db", dbRead)     # must already exist
 ```
 
-`dbReadWrite` is the default and creates the database file when necessary. `dbRead` opens an existing database without write access. Each opened connection must eventually be closed.
+`dbReadWrite` is the default and creates the database file when necessary. `dbRead` opens an existing database without write access. Each opened connection must eventually be closed, and each explicit prepared statement must eventually be finalized.
 
 SQLite failures raise `SqliteError`. Programming errors such as using a closed connection or a finalized statement are detected with assertions.
 

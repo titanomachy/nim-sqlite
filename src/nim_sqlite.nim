@@ -481,8 +481,7 @@ proc execScript*(db: DbConn, sql: string) =
             remaining = tail
             remaining.skipLeadingWhiteSpaceAndComments()
 
-iterator iterate*(db: DbConn, sql: string,
-        params: varargs[DbValue, toDbValue]): ResultRow =
+iterator iterate*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): ResultRow =
     ## Executes ``sql``, which must be a single SQL statement, and yields each result row one by one.
     assertCanUseDb db
     let stmtHandle = db.prepareSql(sql, @params)
@@ -517,8 +516,7 @@ iterator iterate*[T: tuple](db: DbConn, sql: string, params: T): ResultRow =
                 discard abi.sqlite3_finalize(stmtHandle)
         db.checkRc(errorRc)
 
-proc all*(db: DbConn, sql: string,
-        params: varargs[DbValue, toDbValue]): seq[ResultRow] =
+proc all*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): seq[ResultRow] =
     ## Executes ``sql``, which must be a single SQL statement, and returns all result rows.
     for row in db.iterate(sql, params):
         result.add row
@@ -528,8 +526,7 @@ proc all*[T: tuple](db: DbConn, sql: string, params: T): seq[ResultRow] =
     for row in db.iterate(sql, params):
         result.add row
 
-proc one*(db: DbConn, sql: string,
-        params: varargs[DbValue, toDbValue]): Option[ResultRow] =
+proc one*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): Option[ResultRow] =
     ## Executes `sql`, which must be a single SQL statement, and returns the first result row.
     ## Returns `none(seq[DbValue])` if the result was empty.
     for row in db.iterate(sql, params):
@@ -540,8 +537,7 @@ proc one*[T: tuple](db: DbConn, sql: string, params: T): Option[ResultRow] =
     for row in db.iterate(sql, params):
         return some(row)
 
-proc value*(db: DbConn, sql: string,
-        params: varargs[DbValue, toDbValue]): Option[DbValue] =
+proc value*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): Option[DbValue] =
     ## Executes `sql`, which must be a single SQL statement, and returns the first column of the first result row.
     ## Returns `none(DbValue)` if the result was empty.
     for row in db.iterate(sql, params):
@@ -554,16 +550,17 @@ proc value*[T: tuple](db: DbConn, sql: string, params: T): Option[DbValue] =
         return some(row.values[0])
 
 proc close*(db: DbConn) =
-    ## Closes the database connection. This should be called once the connection will no longer be used
-    ## to avoid leaking memory. Closing an already closed database is a harmless no-op.
+    ## Logically closes the database connection. Cached statements are finalized
+    ## immediately. Explicit statements created with `stmt` retain ownership of
+    ## their handles and must still be finalized, even after the connection has
+    ## been closed. SQLite releases the underlying connection after the last such
+    ## statement is finalized.
+    ##
+    ## Closing an already closed database is a harmless no-op.
     if not db.isOpen:
         return
-    var stmtHandle = abi.sqlite3_next_stmt(db.handle, nil)
-    while not stmtHandle.isNil:
-        discard abi.sqlite3_finalize(stmtHandle)
-        stmtHandle = abi.sqlite3_next_stmt(db.handle, nil)
     db.cache.clear()
-    let rc = abi.sqlite3_close(db.handle)
+    let rc = abi.sqlite3_close_v2(db.handle)
     db.checkRc(rc)
     DbConnImpl(db).handle = nil
 
@@ -629,7 +626,9 @@ proc unsafeHandle*(db: DbConn): ptr abi.sqlite3 {.inline.} =
 #
 
 proc stmt*(db: DbConn, sql: string): SqlStatement =
-    ## Constructs a prepared statement from `sql`.
+    ## Constructs a prepared statement from `sql`. The returned statement owns
+    ## its SQLite handle and must be finalized independently, including when the
+    ## database connection is closed first.
     assertCanUseDb db
     let handle = prepareSql(db, sql)
     SqlStatementImpl(handle: handle, db: db).SqlStatement
@@ -742,15 +741,19 @@ proc value*[T: tuple](statement: SqlStatement, params: T): Option[DbValue] =
         return some(row.values[0])
 
 proc finalize*(statement: SqlStatement): void =
-    ## Finalize the statement. This needs to be called once the statement is no longer used to
-    ## prevent memory leaks. Finalizing an already finalized statement is a harmless no-op.
-    if SqlStatementImpl(statement).isNil:
+    ## Finalizes the statement and releases its SQLite handle. This must be
+    ## called once the statement is no longer used, including if its database
+    ## connection has already been closed. Finalizing an already finalized
+    ## statement is a harmless no-op.
+    if SqlStatementImpl(statement).isNil or statement.handle.isNil:
         return
     discard abi.sqlite3_finalize(statement.handle)
     SqlStatementImpl(statement).handle = nil
 
 proc isAlive*(statement: SqlStatement): bool =
-    ## Returns true if ``statement`` has been initialized and not yet finalized.
+    ## Returns true if ``statement`` can be executed. A statement whose database
+    ## has been closed returns false, but still owns its handle until `finalize`
+    ## is called.
     (not SqlStatementImpl(statement).isNil) and (not statement.handle.isNil) and
         (not statement.db.handle.isNil)
 

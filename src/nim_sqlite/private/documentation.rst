@@ -7,8 +7,9 @@ Opening a database connection.
 
 A database connection is opened by calling the `openDatabase <#openDatabase,string,Natural>`_ procedure with the
 path to the database file as an argument. If the file doesn't exist, it will be created. An in-memory database can
-be created by using the special path `":memory:"` as an argument. Once the database connection is no longer needed
-`close <#close,DbConn>`_ must be called to prevent memory leaks.
+be created by using the special path `":memory:"` as an argument. Once the database connection is no longer needed,
+`close <#close,DbConn>`_ must be called to prevent memory leaks. Closing a connection finalizes its internally cached
+statements. Explicit statements created with ``stmt`` own their handles and must be finalized separately.
 
 .. code-block:: nim
 
@@ -160,6 +161,19 @@ directly on the connection object are also available for the prepared statement:
     # Once the statement is no longer needed it must be finalized
     # to prevent memory leaks.
     stmt.finalize()
+
+An explicit statement owns its SQLite statement handle. Closing the database makes the statement unusable for further
+execution, but does not finalize its handle. It remains safe and necessary to finalize the statement afterward:
+
+.. code-block:: nim
+
+    let stmt = db.stmt("SELECT name FROM Person")
+    db.close()
+    doAssert not stmt.isAlive
+    stmt.finalize()
+
+The underlying SQLite connection is released after all explicit statements have been finalized. Prefer finalizing
+statements before closing the connection when practical; post-close finalization makes cleanup ordering safe.
 
 There are performance benefits of reusing prepared statements, since the preparation only needs to be done once.
 However, `nim_sqlite` keeps an internal cache of prepared statements, so it's typically not necesarry to manage

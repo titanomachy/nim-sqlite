@@ -4,6 +4,8 @@ nimble.develop
 nimble.paths
 nimbledeps
 build/
+REVIEWS/
+PLANS/
 
 # Prevent an accidental database file from breaking Windows checkouts.
 /:memory

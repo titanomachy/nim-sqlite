@@ -295,12 +295,29 @@ test "db.close twice":
     db.close()
     db.close()
 
-test "db.close with live statements":
+test "db.close with owned explicit statements":
     let db = openDatabase(":memory:")
     db.execScript(seedScript)
-    let stmt {.used.} = db.stmt(SelectPersons)
+    let stmt = db.stmt(SelectPersons)
     db.close()
     check not stmt.isAlive
+    expect AssertionDefect:
+        discard stmt.all()
+    # The explicit statement still owns its SQLite handle after the logical
+    # connection close and must remain safe to finalize.
+    stmt.finalize()
+    stmt.finalize()
+
+test "db.close with multiple owned explicit statements":
+    let db = openDatabase(":memory:")
+    let first = db.stmt("SELECT 1")
+    let second = db.stmt("SELECT 2")
+    db.close()
+    check not first.isAlive
+    check not second.isAlive
+    # Finalization order must not matter after sqlite3_close_v2.
+    second.finalize()
+    first.finalize()
 
 test "db.close default value":
     var db: DbConn
@@ -388,6 +405,7 @@ test "stmt.iterate close/finalize":
         expect AssertionDefect:
             for row in stmt.iterate():
                 db.close()
+        stmt.finalize()
     withDb:
         let stmt = db.stmt(SelectPersons)
         expect AssertionDefect:

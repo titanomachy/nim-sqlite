@@ -42,7 +42,9 @@ proc contains*(cache: StmtCache, key: string): bool =
   cache.table.contains(key)
 
 proc clear*(cache: var StmtCache) =
-  ## remove all items
+  ## Finalize and remove all statements owned by the cache.
+  for item in cache.list:
+    discard abi.sqlite3_finalize(item.val)
   cache.list = initDoublyLinkedList[Node]()
   cache.table.clear()
 
@@ -66,7 +68,10 @@ proc `[]=`*(cache: var StmtCache, key: string, val: ptr abi.sqlite3_stmt) =
     cache.list.prepend node
     cache.resize()
   else:
-    # set value 
+    # Replacing an entry transfers ownership of the new statement to the
+    # cache, so release the statement that was previously owned here.
+    if node.value.val != val:
+      discard abi.sqlite3_finalize(node.value.val)
     node.value.val = val
     # move to head
     cache.list.remove node
