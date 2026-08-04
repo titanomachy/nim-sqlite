@@ -529,6 +529,10 @@ proc execScript*(db: DbConn, sql: string) =
             var stmtHandle: ptr abi.sqlite3_stmt
             var rc = abi.sqlite3_prepare_v2(db.handle, remaining, -1, addr stmtHandle, addr tail)
             db.checkRc(rc)
+            if stmtHandle.isNil:
+                remaining = tail
+                remaining.skipLeadingWhiteSpaceAndComments()
+                continue
             rc = abi.sqlite3_step(stmtHandle)
             discard abi.sqlite3_finalize(stmtHandle)
             db.checkRc(rc)

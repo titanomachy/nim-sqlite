@@ -289,6 +289,19 @@ test "db.execScript trailing comment":
         let rows = db.all(SelectPersons)
         check rows.len == 4
 
+test "db.execScript ignores scripts without statements":
+    withDb:
+        for script in [
+            "",
+            "   \n\t",
+            ";;;",
+            "-- line comment",
+            "/* block comment */",
+            "; -- comments and empty statements\n; /* only */ ;"
+        ]:
+            db.execScript(script)
+        check db.all(SelectPersons).len == 2
+
 test "db.execScript in transaction":
     withDb:
         db.transaction:
