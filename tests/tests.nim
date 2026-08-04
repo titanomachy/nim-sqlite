@@ -327,6 +327,30 @@ test "db.transaction with exception":
             discard
         check db.all("SELECT name, age FROM Person").len == 2
 
+test "db.transaction rolls back a failed commit":
+    withDb:
+        db.execScript("""
+            CREATE TABLE Parent(id INTEGER PRIMARY KEY);
+            CREATE TABLE Child(
+                parentId INTEGER,
+                FOREIGN KEY(parentId) REFERENCES Parent(id)
+                    DEFERRABLE INITIALLY DEFERRED
+            );
+        """)
+
+        expect SqliteError:
+            db.transaction:
+                db.exec("INSERT INTO Child(parentId) VALUES(1)")
+
+        check not db.isInTransaction
+        check db.value("SELECT COUNT(*) FROM Child").get.fromDb(int) == 0
+
+        # The connection must be ready for a new transaction after cleanup.
+        db.transaction:
+            db.exec("INSERT INTO Parent(id) VALUES(1)")
+            db.exec("INSERT INTO Child(parentId) VALUES(1)")
+        check db.value("SELECT COUNT(*) FROM Child").get.fromDb(int) == 1
+
 test "db.transaction nesting":
     withDb:
         db.transaction:

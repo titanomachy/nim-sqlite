@@ -229,7 +229,7 @@ db.transaction:
   db.exec("UPDATE account SET balance = balance + ? WHERE id = ?", 50, 2)
 ```
 
-The transaction commits when the block finishes normally and rolls back when an exception escapes it. Nested `transaction` blocks reuse the active transaction.
+The transaction commits when the block finishes normally and rolls back when an exception escapes it. If `COMMIT` fails while SQLite still considers the transaction active, the pending changes are rolled back before the commit error is propagated. Nested `transaction` blocks reuse the active transaction.
 
 ## Prepared statements and caching
 

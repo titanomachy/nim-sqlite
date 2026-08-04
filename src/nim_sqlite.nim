@@ -451,8 +451,9 @@ proc exec*[T: tuple](db: DbConn, sql: string, params: T) =
     db.checkRc(rc)
 
 template transaction*(db: DbConn, body: untyped) =
-    ## Starts a transaction and runs `body` within it. At the end the transaction is commited.
-    ## If an error is raised by `body` the transaction is rolled back. Nesting transactions is a no-op.
+    ## Starts a transaction and runs `body` within it. At the end the transaction is committed.
+    ## If the body or commit fails, an active transaction is rolled back. Nesting transactions is
+    ## a no-op.
     if db.isInTransaction:
         body
     else:
@@ -467,7 +468,19 @@ template transaction*(db: DbConn, body: untyped) =
                 raise
         finally:
             if ok:
-                db.exec("COMMIT")
+                try:
+                    db.exec("COMMIT")
+                except Exception as commitError:
+                    # Some errors, including deferred foreign-key violations,
+                    # leave the transaction and its pending changes active.
+                    # Rollback is best-effort so the commit error remains the
+                    # exception observed by the caller.
+                    try:
+                        if db.isOpen and db.isInTransaction:
+                            db.exec("ROLLBACK")
+                    except Exception:
+                        discard
+                    raise commitError
 
 proc execMany*(db: DbConn, sql: string, params: seq[seq[DbValue]]) =
     ## Executes ``sql``, which must be a single SQL statement, repeatedly using each element of

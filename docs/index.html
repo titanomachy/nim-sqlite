@@ -645,7 +645,7 @@ Raised when whenever a database related error occurs. Errors are typically a res
 <div id="execMany-procs-all">
   <div id="execMany,DbConn,string,seq[seq[DbValue]]">
   <dt><pre><span class="Keyword">proc</span> <a href="#execMany%2CDbConn%2Cstring%2Cseq%5Bseq%5BDbValue%5D%5D"><span class="Identifier">execMany</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">seq</span><span class="Other">[</span><a href="#DbValue"><span class="Identifier">DbValue</span></a><span class="Other">]</span><span class="Other">]</span><span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
     
@@ -655,7 +655,7 @@ Raised when whenever a database related error occurs. Errors are typically a res
 </div>
 <div id="execMany,SqlStatement,seq[seq[DbValue]]">
   <dt><pre><span class="Keyword">proc</span> <a href="#execMany%2CSqlStatement%2Cseq%5Bseq%5BDbValue%5D%5D"><span class="Identifier">execMany</span></a><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">seq</span><span class="Other">[</span><a href="#DbValue"><span class="Identifier">DbValue</span></a><span class="Other">]</span><span class="Other">]</span><span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
     
@@ -684,7 +684,7 @@ Raised when whenever a database related error occurs. Errors are typically a res
 <div id="execScript-procs-all">
   <div id="execScript,DbConn,string">
   <dt><pre><span class="Keyword">proc</span> <a href="#execScript%2CDbConn%2Cstring"><span class="Identifier">execScript</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
     
@@ -1136,7 +1136,7 @@ Raised when whenever a database related error occurs. Errors are typically a res
   <dt><pre><span class="Keyword">template</span> <a href="#transaction.t%2CDbConn%2Cuntyped"><span class="Identifier">transaction</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span></pre></dt>
   <dd>
     
-    Starts a transaction and runs <tt class="docutils literal"><span class="pre"><span class="Identifier">body</span></span></tt> within it. At the end the transaction is commited. If an error is raised by <tt class="docutils literal"><span class="pre"><span class="Identifier">body</span></span></tt> the transaction is rolled back. Nesting transactions is a no-op.
+    Starts a transaction and runs <tt class="docutils literal"><span class="pre"><span class="Identifier">body</span></span></tt> within it. At the end the transaction is committed. If the body or commit fails, an active transaction is rolled back. Nesting transactions is a no-op.
     
   </dd>
 </div>
@@ -1152,7 +1152,7 @@ Raised when whenever a database related error occurs. Errors are typically a res
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-04 16:27:32 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-04 16:51:07 UTC</small>
       </div>
     </div>
   </div>
