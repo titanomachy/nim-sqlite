@@ -22,14 +22,16 @@
 
 It builds on [nim-sqlite3-abi](https://github.com/arnetheduck/nim-sqlite3-abi), which compiles SQLite's C source into your program. The final host therefore needs neither a separate SQLite installation nor a dynamically linked SQLite library.
 
-## Why use it?
+## Why nim-sqlite?
 
-- **Typed SQLite values.** `DbValue` distinguishes integers, floating-point values, text, blobs, and `NULL` instead of representing every result as a string.
-- **Idiomatic conversion.** Bind ordinary Nim values as query parameters and unpack result rows into tuples, including nullable `Option[T]` fields.
-- **Safe handles.** Connections and prepared statements are wrapped so the library can detect attempts to use closed or finalized resources.
-- **Several query styles.** Stream rows with `iterate`, collect them with `all`, fetch one row with `one`, or fetch one cell with `value`.
-- **Transaction helpers.** `transaction`, `execMany`, and `execScript` handle commits and rollbacks for you.
-- **SQLite-specific by design.** The API exposes useful SQLite behavior without pretending to be interchangeable with other database engines.
+`nim-sqlite` is for developers who want SQLite—not an ORM—but want it to feel like a native Nim library. You keep control over your SQL and SQLite behavior while the library handles type conversion, parameter binding, statement reuse, and failure-safe cleanup.
+
+- **Keep SQL as the source of truth.** Write ordinary SQLite queries and use SQLite-specific features directly, without learning a query DSL or fitting your data into an ORM.
+- **Keep database values typed.** `DbValue` preserves SQLite's integers, floating-point values, text, blobs, and `NULL`; `fromDb` reports storage-class mismatches instead of silently coercing them.
+- **Bind data, not strings.** Pass ordinary Nim values to positional parameters or use named tuples for order-independent binding. Quoting and representation stay out of application code.
+- **Fetch exactly what you need.** Stream large results with `iterate`, collect them with `all`, request one row with `one`, or retrieve a single value with `value`.
+- **Reuse statements without losing control.** Common queries benefit from automatic prepared-statement caching, while explicit `SqlStatement` values remain available for deliberate reuse.
+- **Make failure behavior predictable.** Guarded connection and statement lifecycles catch invalid use, while `transaction`, `execMany`, and `execScript` provide consistent commit and rollback behavior.
 
 ## Requirements
 
