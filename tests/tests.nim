@@ -523,6 +523,35 @@ test "cacheSize=0":
     discard db.all(SelectPersons)
     db.close()
 
+test "db binding failure releases uncached statements":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        let statementsBefore = db.preparedStatementCount
+        for _ in 0 ..< 3:
+            expect SqliteError:
+                db.exec("SELECT ?")
+            check db.preparedStatementCount == statementsBefore
+    finally:
+        db.close()
+
+test "db preparation failure releases its statement":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        let statementsBefore = db.preparedStatementCount
+        expect AssertionDefect:
+            db.exec("SELECT 1; SELECT 2")
+        check db.preparedStatementCount == statementsBefore
+    finally:
+        db.close()
+
+test "openDatabase failure releases SQLite memory":
+    let memoryBefore = abi.sqlite3_memory_used()
+    for mode in [dbReadWrite, dbRead]:
+        for _ in 0 ..< 3:
+            expect SqliteError:
+                discard openDatabase(".", mode)
+            check abi.sqlite3_memory_used() == memoryBefore
+
 test "ResultRow":
     withDb:
         let row = db.one(SelectPersons).get

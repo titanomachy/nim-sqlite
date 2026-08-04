@@ -304,14 +304,22 @@ proc bindNamedParams[T: tuple](db: DbConn, stmtHandle: ptr abi.sqlite3_stmt,
                 $parameterName & "'.")
 
 proc prepareSql(db: DbConn, sql: string): ptr abi.sqlite3_stmt =
+    var stmtHandle: ptr abi.sqlite3_stmt
     var tail: cstring
-    let rc = abi.sqlite3_prepare_v2(db.handle, sql.cstring, sql.len.cint + 1, addr result, addr tail)
-    # (db.handle, sql.cstring, sql.len.cint + 1, addr result, tail)
-    db.checkRc(rc)
-    tail.skipLeadingWhiteSpaceAndComments()
-    assert tail.len == 0,
-        "Only single SQL statement is allowed in this context. " &
-        "To execute several SQL statements, use 'execScript'"
+    try:
+        let rc = abi.sqlite3_prepare_v2(db.handle, sql.cstring, sql.len.cint + 1,
+            addr stmtHandle, addr tail)
+        db.checkRc(rc)
+        tail.skipLeadingWhiteSpaceAndComments()
+        assert tail.len == 0,
+            "Only single SQL statement is allowed in this context. " &
+            "To execute several SQL statements, use 'execScript'"
+        result = stmtHandle
+        stmtHandle = nil
+    finally:
+        # Keep ownership local until preparation and validation both succeed.
+        if not stmtHandle.isNil:
+            discard abi.sqlite3_finalize(stmtHandle)
 
 proc acquireStmt(db: DbConn, sql: string): StmtLease =
     if db.hasCache:
@@ -782,15 +790,26 @@ proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): 
     if cacheSize > 0:
         db.cache = initStmtCache(cacheSize)
     result = DbConn(db)
-    case mode
-    of dbReadWrite:
-        let rc = abi.sqlite3_open(path, addr db.handle)
-        result.checkRc(rc)
-    of dbRead:
-        let rc = abi.sqlite3_open_v2(path, addr db.handle, abi.SQLITE_OPEN_READONLY, nil)
-        result.checkRc(rc)
-    result.exec("PRAGMA encoding = 'UTF-8'")
-    result.exec("PRAGMA foreign_keys = ON")
+    var initialized = false
+    try:
+        case mode
+        of dbReadWrite:
+            let rc = abi.sqlite3_open(path, addr db.handle)
+            result.checkRc(rc)
+        of dbRead:
+            let rc = abi.sqlite3_open_v2(path, addr db.handle, abi.SQLITE_OPEN_READONLY, nil)
+            result.checkRc(rc)
+        result.exec("PRAGMA encoding = 'UTF-8'")
+        result.exec("PRAGMA foreign_keys = ON")
+        initialized = true
+    finally:
+        if not initialized:
+            # SQLite may allocate a connection handle even when opening fails.
+            # Initialization can also fail after cached statements are prepared.
+            db.cache.clear()
+            if not db.handle.isNil:
+                discard abi.sqlite3_close_v2(db.handle)
+                db.handle = nil
 
 proc loadExtension*(db: DbConn, path: string) =
     ## Load an SQLite extension. Will raise a ``SqliteError`` exception if loading fails.
