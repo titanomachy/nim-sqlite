@@ -1,23 +1,34 @@
-name: Documentation
+name: Documentation and coverage
 
 on:
   push:
     branches: [master]
     paths:
       - "src/**"
+      - "tests/**"
       - "docs/**"
       - "nim_sqlite.nimble"
+      - "code_coverage.sh"
+      - "scripts/**"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "docs/**"
+      - "nim_sqlite.nimble"
+      - "code_coverage.sh"
+      - "scripts/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: github-pages
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -32,23 +43,63 @@ jobs:
           nim-version: "2.2.10"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install lcov 2.1
+        run: |
+          sudo apt-get update
+          sudo apt-get remove -y lcov || true
+          sudo apt-get install -y libperlio-gzip-perl libjson-pp-perl libcapture-tiny-perl libdatetime-perl
+          wget https://github.com/linux-test-project/lcov/releases/download/v2.1/lcov-2.1.tar.gz
+          tar -xzf lcov-2.1.tar.gz
+          cd lcov-2.1
+          sudo make install
+
       - name: Install dependencies
         run: nimble install --depsOnly -Y
 
       - name: Build documentation
         run: nimble docs
 
+      - name: Run tests and generate coverage
+        run: nimble coverage
+
+      - name: Enforce minimum coverage
+        run: |
+          awk -F: -v minimum=80 '
+            /^LH:/ { covered += $2 }
+            /^LF:/ { total += $2 }
+            END {
+              if (total == 0) {
+                print "No coverage data found"
+                exit 2
+              }
+
+              percent = covered * 100 / total
+              printf "Line coverage: %.1f%%\n", percent
+
+              if (percent < minimum) {
+                printf "Coverage is below %.1f%%\n", minimum
+                exit 1
+              }
+            }
+          ' coverage.info
+
       - name: Configure GitHub Pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: actions/configure-pages@v5
 
       - name: Upload GitHub Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: actions/upload-pages-artifact@v4
         with:
           path: docs
 
   deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

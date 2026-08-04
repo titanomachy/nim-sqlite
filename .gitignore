@@ -4,6 +4,9 @@ nimble.develop
 nimble.paths
 nimbledeps
 build/
+coverage.info
+coverage_html/
+docs/coverage.svg
 REVIEWS/
 PLANS/
 

@@ -1,12 +1,14 @@
 # nim-sqlite
 
 [![CI](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml/badge.svg)](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml)
+[![Coverage](https://titanomachy.github.io/nim-sqlite/coverage.svg)](https://github.com/titanomachy/nim-sqlite/actions)
 
 [Documentation](https://titanomachy.github.io/nim-sqlite/) · [MIT License](LICENSE)
 
 > [!WARNING]
-> **Beta software:** nim-sqlite is a pre-1.0 package under active development.
-> Its public API may change without compatibility guarantees.
+> Beta Notice: nim-sqlite is a pre-1.0 package under active development.
+> While it is fully functional today, future releases may introduce breaking changes,
+> and the public API offers no backward compatibility guarantees.
 
 `nim-sqlite` is a focused, type-safe SQLite library for Nim. It stays close to SQLite instead of presenting a generic database abstraction, while adding:
 
@@ -196,8 +198,11 @@ These overloads also allow `Time` values to participate in parameter binding and
 Complete runnable programs are available in the [`examples`](examples) directory:
 
 - [`basic.nim`](examples/basic.nim) covers schema creation, bound parameters, and typed rows.
+- [`blobs_and_nulls.nim`](examples/blobs_and_nulls.nim) stores BLOB values and nullable text.
 - [`custom_types.nim`](examples/custom_types.nim) adds `toDb` and `fromDb` overloads for `Time`.
+- [`named_parameters.nim`](examples/named_parameters.nim) uses named tuples for bulk inserts and filtered queries.
 - [`prepared_statements.nim`](examples/prepared_statements.nim) demonstrates explicit statement reuse and cleanup.
+- [`transactions.nim`](examples/transactions.nim) implements an atomic account transfer with rollback on failure.
 
 Run an example from the repository root with:
 
@@ -299,6 +304,20 @@ nimble test -Y
 ```
 
 The tests cover connection lifecycle, queries, transactions, prepared statements, caching, type conversion, extensions, and foreign keys.
+
+Run all examples with:
+
+```sh
+nimble examples -Y
+```
+
+To generate the line coverage report and badge, install `lcov` and `genhtml`, then run:
+
+```sh
+nimble coverage
+```
+
+The HTML report is written to `coverage_html/index.html`, and the generated badge is written to `docs/coverage.svg`. CI enforces at least 80% line coverage and publishes the badge with the API documentation.
 
 ## License and attribution
 

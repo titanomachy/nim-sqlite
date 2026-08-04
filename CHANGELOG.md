@@ -11,7 +11,8 @@ This changelog covers changes made after version 0.2.0.
 ### Added
 
 - Add named SQLite parameter binding through named tuples for connection and prepared-statement operations, including bulk inserts with `execMany`.
-- Add runnable examples for basic usage, custom type conversions, and prepared statements.
+- Add runnable examples for basic usage, BLOB and NULL values, custom type conversions, named parameters, prepared statements, and transactions.
+- Add local and CI line-coverage reporting with an automatically published coverage badge.
 - Publish the generated API documentation automatically through GitHub Pages.
 
 ### Changed
