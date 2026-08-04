@@ -208,7 +208,7 @@ test "db.exec trailing comment":
 
 test "db.exec trailing syntax error":
     withDb:
-        expect AssertionDefect:
+        expect SqliteError:
             db.exec("""
                 INSERT INTO Person(name, age)
                 VALUES(?, ?);
@@ -216,16 +216,16 @@ test "db.exec trailing syntax error":
                 comment
                 *
             """, "John Persson", 103)
+        check db.all(SelectPersons).len == 2
 
 test "db.exec with multiple SQL statements":
     withDb:
-        expect AssertionDefect:
+        expect SqliteError:
             db.exec("""
-                INSERT INTO Person(name, age)
-                VALUES(?, ?);
-                INSERT INTO Person(name, age)
-                VALUES(?, ?);
-            """, "John Persson", 103, "John Persson", 103)
+                DELETE FROM Person;
+                DELETE FROM Person;
+            """)
+        check db.all(SelectPersons).len == 2
 
 test "db.execMany":
     withDb:
@@ -575,7 +575,7 @@ test "db preparation failure releases its statement":
     let db = openDatabase(":memory:", cacheSize = 0)
     try:
         let statementsBefore = db.preparedStatementCount
-        expect AssertionDefect:
+        expect SqliteError:
             db.exec("SELECT 1; SELECT 2")
         check db.preparedStatementCount == statementsBefore
     finally:

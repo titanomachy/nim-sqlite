@@ -311,9 +311,10 @@ proc prepareSql(db: DbConn, sql: string): ptr abi.sqlite3_stmt =
             addr stmtHandle, addr tail)
         db.checkRc(rc)
         tail.skipLeadingWhiteSpaceAndComments()
-        assert tail.len == 0,
-            "Only single SQL statement is allowed in this context. " &
-            "To execute several SQL statements, use 'execScript'"
+        if tail.len != 0:
+            raise newSqliteError(
+                "Only a single SQL statement is allowed in this context. " &
+                "To execute several SQL statements, use 'execScript'.")
         result = stmtHandle
         stmtHandle = nil
     finally:

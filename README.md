@@ -100,6 +100,7 @@ echo db.changes # rows changed by the most recent INSERT, UPDATE, or DELETE
 ```
 
 Bound parameters handle quoting and data types correctly. Do not build SQL by interpolating untrusted values into the SQL string.
+Passing multiple statements to a single-statement operation raises `SqliteError`; use `execScript` for scripts containing several statements.
 
 For order-independent binding, use SQLite `:name` parameters and pass a named tuple. Each tuple field binds the parameter with the same name, regardless of where either one appears:
 
