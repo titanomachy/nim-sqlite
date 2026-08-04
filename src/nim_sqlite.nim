@@ -174,12 +174,6 @@ proc toDb*[T: type(nil)](val: T): DbValue =
     ## Convert a nil literal to a DbValue.
     DbValue(kind: sqliteNull)
 
-proc toDbValues*(values: varargs[DbValue, toDb]): seq[DbValue] =
-    ## Convert several values to a sequence of DbValue's.
-    runnableExamples:
-        doAssert toDbValues("string", 23) == @[toDb("string"), toDb(23)]
-    @values
-
 proc fromDb*(value: DbValue, T: typedesc[Ordinal]): T =
     ## Convert a DbValue to an ordinal.
     value.intVal.T

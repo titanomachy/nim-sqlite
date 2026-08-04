@@ -110,11 +110,14 @@ procedure can be used instead. It executes the same SQL repeatedly, but with dif
 
 .. code-block:: nim
 
-    let parameters = @[toDbValues("Person 1", 17), toDbValues("Person 2", 55)]
+    let parameters = [
+        (name: "Person 1", age: 17),
+        (name: "Person 2", age: 55)
+    ]
     # Will insert two rows
     db.execMany("""
         INSERT INTO Person(name, age)
-        VALUES(?, ?);
+        VALUES(:name, :age);
     """, parameters)
 
 Transactions

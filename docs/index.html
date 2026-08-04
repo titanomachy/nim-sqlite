@@ -216,10 +216,6 @@
 <li><a class="reference" href="#toDb%2CT_6" title="toDb[T: type(nil)](val: T): DbValue">toDb[T: type(nil)](val: T): DbValue</a></li>
 
 </ul>
-<ul class="simple nested-toc-section">toDbValues
-  <li><a class="reference" href="#toDbValues%2Cvarargs%5BDbValue%2CtoDb%5D" title="toDbValues(values: varargs[DbValue, toDb]): seq[DbValue]">toDbValues(values: varargs[DbValue, toDb]): seq[DbValue]</a></li>
-
-</ul>
 <ul class="simple nested-toc-section">unpack
   <li><a class="reference" href="#unpack%2CResultRow%2Ctypedesc%5BT%5D" title="unpack[T: tuple](row: ResultRow; _: typedesc[T]): T">unpack[T: tuple](row: ResultRow; _: typedesc[T]): T</a></li>
 <li><a class="reference" href="#unpack%2Cseq%5BDbValue%5D%2Ctypedesc%5BT%5D" title="unpack[T: tuple](row: seq[DbValue]; _: typedesc[T]): T">unpack[T: tuple](row: seq[DbValue]; _: typedesc[T]): T</a></li>
@@ -340,11 +336,14 @@
 <span class="Keyword">if</span> <span class="Identifier">value</span><span class="Operator">.</span><span class="Identifier">isSome</span><span class="Punctuation">:</span>
     <span class="Identifier">echo</span> <span class="Identifier">fromDb</span><span class="Punctuation">(</span><span class="Identifier">value</span><span class="Operator">.</span><span class="Identifier">get</span><span class="Punctuation">,</span> <span class="Identifier">int</span><span class="Punctuation">)</span> <span class="Comment"># Prints age of John Doe</span></pre>
 <h1><a class="toc-backref" id="inserting-data-in-bulk" href="#inserting-data-in-bulk">Inserting data in bulk</a></h1><p>The <a class="reference external" href="#exec,DbConn,string,varargs[DbValue,toDb]">exec</a> procedure works fine for inserting single rows, but it gets awkward when inserting many rows. For this purpose the <a class="reference external" href="#execMany,DbConn,string,seq[seq[DbValue]]">execMany</a> procedure can be used instead. It executes the same SQL repeatedly, but with different parameters each time.</p>
-<pre class="listing"><span class="Keyword">let</span> <span class="Identifier">parameters</span> <span class="Operator">=</span> <span class="Operator">@</span><span class="Punctuation">[</span><span class="Identifier">toDbValues</span><span class="Punctuation">(</span><span class="StringLit">&quot;Person 1&quot;</span><span class="Punctuation">,</span> <span class="DecNumber">17</span><span class="Punctuation">)</span><span class="Punctuation">,</span> <span class="Identifier">toDbValues</span><span class="Punctuation">(</span><span class="StringLit">&quot;Person 2&quot;</span><span class="Punctuation">,</span> <span class="DecNumber">55</span><span class="Punctuation">)</span><span class="Punctuation">]</span>
+<pre class="listing"><span class="Keyword">let</span> <span class="Identifier">parameters</span> <span class="Operator">=</span> <span class="Punctuation">[</span>
+    <span class="Punctuation">(</span><span class="Identifier">name</span><span class="Punctuation">:</span> <span class="StringLit">&quot;Person 1&quot;</span><span class="Punctuation">,</span> <span class="Identifier">age</span><span class="Punctuation">:</span> <span class="DecNumber">17</span><span class="Punctuation">)</span><span class="Punctuation">,</span>
+    <span class="Punctuation">(</span><span class="Identifier">name</span><span class="Punctuation">:</span> <span class="StringLit">&quot;Person 2&quot;</span><span class="Punctuation">,</span> <span class="Identifier">age</span><span class="Punctuation">:</span> <span class="DecNumber">55</span><span class="Punctuation">)</span>
+<span class="Punctuation">]</span>
 <span class="Comment"># Will insert two rows</span>
 <span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">execMany</span><span class="Punctuation">(</span><span class="LongStringLit">&quot;&quot;&quot;
     INSERT INTO Person(name, age)
-    VALUES(?, ?);
+    VALUES(:name, :age);
 &quot;&quot;&quot;</span><span class="Punctuation">,</span> <span class="Identifier">parameters</span><span class="Punctuation">)</span></pre>
 <h1><a class="toc-backref" id="transactions" href="#transactions">Transactions</a></h1><p>The procedures that can execute multiple SQL statements (<tt class="docutils literal"><span class="pre"><span class="Identifier">execScript</span></span></tt> and <tt class="docutils literal"><span class="pre"><span class="Identifier">execMany</span></span></tt>) are wrapped in a transaction by <tt class="docutils literal"><span class="pre"><span class="Identifier">nim_sqlite</span></span></tt>. Transactions can also be controlled manually by using one of these two options:</p>
 <ul class="simple"><li>Option 1: using the <a class="reference external" href="#transaction.t,DbConn,untyped">transaction</a> template</li>
@@ -984,20 +983,6 @@ Raised when whenever a database related error occurs. Errors are typically a res
 </div>
 
 </div>
-<div id="toDbValues-procs-all">
-  <div id="toDbValues,varargs[DbValue,toDb]">
-  <dt><pre><span class="Keyword">proc</span> <a href="#toDbValues%2Cvarargs%5BDbValue%2CtoDb%5D"><span class="Identifier">toDbValues</span></a><span class="Other">(</span><span class="Identifier">values</span><span class="Other">:</span> <span class="Identifier">varargs</span><span class="Other">[</span><a href="#DbValue"><span class="Identifier">DbValue</span></a><span class="Other">,</span> <span class="Identifier">toDb</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><a href="#DbValue"><span class="Identifier">DbValue</span></a><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
-  <dd>
-    
-    Convert several values to a sequence of DbValue's.
-<p><strong class="examples_text">Example:</strong></p>
-<pre class="listing"><span class="Identifier">doAssert</span> <span class="Identifier">toDbValues</span><span class="Punctuation">(</span><span class="StringLit">&quot;string&quot;</span><span class="Punctuation">,</span> <span class="DecNumber">23</span><span class="Punctuation">)</span> <span class="Operator">==</span> <span class="Operator">@</span><span class="Punctuation">[</span><span class="Identifier">toDb</span><span class="Punctuation">(</span><span class="StringLit">&quot;string&quot;</span><span class="Punctuation">)</span><span class="Punctuation">,</span> <span class="Identifier">toDb</span><span class="Punctuation">(</span><span class="DecNumber">23</span><span class="Punctuation">)</span><span class="Punctuation">]</span></pre>
-    
-  </dd>
-</div>
-
-</div>
 <div id="unpack-procs-all">
   <div id="unpack,ResultRow,typedesc[T]">
   <dt><pre><span class="Keyword">proc</span> <a href="#unpack%2CResultRow%2Ctypedesc%5BT%5D"><span class="Identifier">unpack</span></a><span class="Other">[</span><span class="Identifier">T</span><span class="Other">:</span> <span class="Keyword">tuple</span><span class="Other">]</span><span class="Other">(</span><span class="Identifier">row</span><span class="Other">:</span> <a href="#ResultRow"><span class="Identifier">ResultRow</span></a><span class="Other">;</span> <span class="Operator">_</span><span class="Other">:</span> <span class="Identifier">typedesc</span><span class="Other">[</span><span class="Identifier">T</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">T</span></pre></dt>
@@ -1167,7 +1152,7 @@ Raised when whenever a database related error occurs. Errors are typically a res
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-04 16:21:19 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-04 16:27:32 UTC</small>
       </div>
     </div>
   </div>

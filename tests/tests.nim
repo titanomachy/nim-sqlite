@@ -219,7 +219,10 @@ test "db.execMany":
         db.execMany("""
             INSERT INTO Person(name, age)
             VALUES(?, ?)
-        """, @[toDbValues("John Doe", 23), toDbValues("Jane Doe", 22)])
+        """, @[
+            @[toDb("John Doe"), toDb(23)],
+            @[toDb("Jane Doe"), toDb(22)]
+        ])
         let rows = db.all(SelectPersons)
         check rows.len == 4
 

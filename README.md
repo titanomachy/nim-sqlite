@@ -209,14 +209,14 @@ nim r --path:src examples/basic.nim
 `execMany` repeats one statement for several parameter sets and wraps the operation in a transaction:
 
 ```nim
-let people = @[
-  toDbValues("Alan", 41),
-  toDbValues("Barbara", 29),
-  toDbValues("Edsger", 72)
+let people = [
+  (name: "Alan", age: 41),
+  (name: "Barbara", age: 29),
+  (name: "Edsger", age: 72)
 ]
 
 db.execMany(
-  "INSERT INTO person(name, age) VALUES(?, ?)",
+  "INSERT INTO person(name, age) VALUES(:name, :age)",
   people
 )
 ```
