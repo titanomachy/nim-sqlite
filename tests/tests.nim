@@ -20,9 +20,9 @@ proc preparedStatementCount(db: DbConn): int =
 type ReentrantParam = object
     db: DbConn
 
-proc toDbValue(value: ReentrantParam): DbValue =
+proc toDb(value: ReentrantParam): DbValue =
     discard value.db.one("SELECT :first, :second", (first: 100, second: 200))
-    toDbValue(22)
+    toDb(22)
 
 const seedScript = staticRead("./seed_test_db.sql")
 
@@ -164,7 +164,7 @@ test "db named parameters":
         check db.value("SELECT :myObject || :myResource",
             (myResource: "Resource", myObject: "Object")).get.strVal ==
             "ObjectResource"
-        check db.value("SELECT :value", (value: toDbValue("converted"),)).get.strVal ==
+        check db.value("SELECT :value", (value: toDb("converted"),)).get.strVal ==
             "converted"
 
         let cachedSql = "SELECT :first || :second"
@@ -244,7 +244,7 @@ test "db.execMany with failure":
             db.execMany("""
                 INSERT INTO Person(name, age)
                 VALUES(?, ?)
-            """, @[@[toDbValue("John Doe"), toDbValue(23)], @[toDbValue("Jane Doe")]])
+            """, @[@[toDb("John Doe"), toDb(23)], @[toDb("Jane Doe")]])
         let rows = db.all(SelectPersons)
         check rows.len == 2
 
@@ -254,7 +254,7 @@ test "db.execMany in transaction":
             db.execMany("""
                 INSERT INTO Person(name, age)
                 VALUES(?, ?)
-            """, @[@[toDbValue("John Doe"), toDbValue(23)], @[toDbValue("Jane Doe"), toDbValue(20)]])
+            """, @[@[toDb("John Doe"), toDb(23)], @[toDb("Jane Doe"), toDb(20)]])
             let rows = db.all(SelectPersons)
             check rows.len == 4
 
@@ -401,6 +401,12 @@ when not defined(macosx):
             expect SqliteError:
                 db.loadExtension("invalid extension path")
 
+test "db.loadExtension on closed connection":
+    let db = openDatabase(":memory:")
+    db.close()
+    expect AssertionDefect:
+        db.loadExtension("invalid extension path")
+
 test "row.unpack":
     withDb:
         let row = db.one(SelectJohnDoe).get
@@ -426,12 +432,12 @@ test "stmt.all":
             discard stmt.all()
         var rows = stmt.all("John Doe")
         check rows.len == 1
-        check rows[0][0].fromDbValue(string) == "John Doe"
-        check rows[0][1].fromDbValue(int) == 47
+        check rows[0][0].fromDb(string) == "John Doe"
+        check rows[0][1].fromDb(int) == 47
         rows = stmt.all("Jane Doe")
         check rows.len == 1
-        check rows[0][0].fromDbValue(string) == "Jane Doe"
-        check rows[0][1].fromDbValue(Option[int]) == none(int)
+        check rows[0][0].fromDb(string) == "Jane Doe"
+        check rows[0][1].fromDb(Option[int]) == none(int)
         stmt.finalize()
 
 test "stmt named parameters":
@@ -556,10 +562,10 @@ test "Type mappings":
             let unpackedRow = rows[0].unpack((string, bool, float, Option[int], seq[byte]))
             check unpackedRow[1]
 
-proc toDbValue(t: Time): DbValue =
+proc toDb(t: Time): DbValue =
     DbValue(kind: sqliteInteger, intVal: toUnix(t))
 
-proc fromDbValue(value: DbValue, T: typedesc[Time]): Time =
+proc fromDb(value: DbValue, T: typedesc[Time]): Time =
     fromUnix(value.intval)
 
 test "Custom type mapping":

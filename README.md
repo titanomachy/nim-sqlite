@@ -150,7 +150,7 @@ if ada.isSome:
   echo name, " ", age
 
 # Fetch the first column of the first row.
-let count = db.value("SELECT COUNT(*) FROM person").get.fromDbValue(int)
+let count = db.value("SELECT COUNT(*) FROM person").get.fromDb(int)
 echo "people: ", count
 ```
 
@@ -176,19 +176,33 @@ The built-in conversions are:
 | `seq[byte]` | `BLOB` |
 | `Option[T]` or `nil` | `NULL` when empty; otherwise the mapping for `T` |
 
-Use `toDbValue` to convert a Nim value explicitly and `fromDbValue` to convert a result. You can support application-specific types by defining matching overloads:
+Use `toDb` to convert a Nim value explicitly and `fromDb` to convert a result. You can support application-specific types by defining matching overloads:
 
 ```nim
 import std/times
 
-proc toDbValue(value: Time): DbValue =
+proc toDb(value: Time): DbValue =
   DbValue(kind: sqliteInteger, intVal: value.toUnix)
 
-proc fromDbValue(value: DbValue, _: typedesc[Time]): Time =
+proc fromDb(value: DbValue, _: typedesc[Time]): Time =
   fromUnix(value.intVal)
 ```
 
 These overloads also allow `Time` values to participate in parameter binding and tuple unpacking.
+
+## Examples
+
+Complete runnable programs are available in the [`examples`](examples) directory:
+
+- [`basic.nim`](examples/basic.nim) covers schema creation, bound parameters, and typed rows.
+- [`custom_types.nim`](examples/custom_types.nim) adds `toDb` and `fromDb` overloads for `Time`.
+- [`prepared_statements.nim`](examples/prepared_statements.nim) demonstrates explicit statement reuse and cleanup.
+
+Run an example from the repository root with:
+
+```sh
+nim r --path:src examples/basic.nim
+```
 
 ## Bulk inserts and transactions
 

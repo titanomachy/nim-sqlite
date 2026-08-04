@@ -147,63 +147,63 @@ proc resetStmt(stmtHandle: ptr abi.sqlite3_stmt) =
 # DbValue
 #
 
-proc toDbValue*[T: Ordinal](val: T): DbValue =
-    ## Convert an ordinal value to a Dbvalue.
+proc toDb*[T: Ordinal](val: T): DbValue =
+    ## Convert an ordinal value to a DbValue.
     DbValue(kind: sqliteInteger, intVal: val.int64)
 
-proc toDbValue*[T: SomeFloat](val: T): DbValue =
+proc toDb*[T: SomeFloat](val: T): DbValue =
     ## Convert a float to a DbValue.
     DbValue(kind: sqliteReal, floatVal: val)
 
-proc toDbValue*[T: string](val: T): DbValue =
+proc toDb*[T: string](val: T): DbValue =
     ## Convert a string to a DbValue.
     DbValue(kind: sqliteText, strVal: val)
 
-proc toDbValue*[T: seq[byte]](val: T): DbValue =
+proc toDb*[T: seq[byte]](val: T): DbValue =
     ## Convert a sequence of bytes to a DbValue.
     DbValue(kind: sqliteBlob, blobVal: val)
 
-proc toDbValue*[T: Option](val: T): DbValue =
+proc toDb*[T: Option](val: T): DbValue =
     ## Convert an optional value to a DbValue.
     if val.isNone:
         DbValue(kind: sqliteNull)
     else:
-        toDbValue(val.get)
+        toDb(val.get)
 
-proc toDbValue*[T: type(nil)](val: T): DbValue =
+proc toDb*[T: type(nil)](val: T): DbValue =
     ## Convert a nil literal to a DbValue.
     DbValue(kind: sqliteNull)
 
-proc toDbValues*(values: varargs[DbValue, toDbValue]): seq[DbValue] =
+proc toDbValues*(values: varargs[DbValue, toDb]): seq[DbValue] =
     ## Convert several values to a sequence of DbValue's.
     runnableExamples:
-        doAssert toDbValues("string", 23) == @[toDbValue("string"), toDbValue(23)] 
+        doAssert toDbValues("string", 23) == @[toDb("string"), toDb(23)]
     @values
 
-proc fromDbValue*(value: DbValue, T: typedesc[Ordinal]): T =
-    # Convert a DbValue to an ordinal.
+proc fromDb*(value: DbValue, T: typedesc[Ordinal]): T =
+    ## Convert a DbValue to an ordinal.
     value.intVal.T
 
-proc fromDbValue*(value: DbValue, T: typedesc[SomeFloat]): float64 =
+proc fromDb*(value: DbValue, T: typedesc[SomeFloat]): float64 =
     ## Convert a DbValue to a float.
     value.floatVal
 
-proc fromDbValue*(value: DbValue, T: typedesc[string]): string =
+proc fromDb*(value: DbValue, T: typedesc[string]): string =
     ## Convert a DbValue to a string.
     value.strVal
 
-proc fromDbValue*(value: DbValue, T: typedesc[seq[byte]]): seq[byte] =
+proc fromDb*(value: DbValue, T: typedesc[seq[byte]]): seq[byte] =
     ## Convert a DbValue to a sequence of bytes.
     value.blobVal
 
-proc fromDbValue*[T](value: DbValue, _: typedesc[Option[T]]): Option[T] =
+proc fromDb*[T](value: DbValue, _: typedesc[Option[T]]): Option[T] =
     ## Convert a DbValue to an optional value.
     if value.kind == sqliteNull:
         none(T)
     else:
-        some(value.fromDbValue(T))
+        some(value.fromDb(T))
 
-proc fromDbValue*(value: DbValue, T: typedesc[DbValue]): T =
+proc fromDb*(value: DbValue, T: typedesc[DbValue]): T =
     ## Special overload that simply return `value`.
     ## The purpose of this overload is to do partial unpacking.
     ## For example, if the type of one column in a result row is unknown,
@@ -274,7 +274,7 @@ proc bindParams(db: DbConn, stmtHandle: ptr abi.sqlite3_stmt, params: varargs[Db
 
 proc bindNamedParams[T: tuple](db: DbConn, stmtHandle: ptr abi.sqlite3_stmt,
         params: T): Rc =
-    mixin toDbValue
+    mixin toDb
 
     result = abi.SQLITE_OK
     let expectedParamsLen = abi.sqlite3_bind_parameter_count(stmtHandle)
@@ -294,7 +294,7 @@ proc bindNamedParams[T: tuple](db: DbConn, stmtHandle: ptr abi.sqlite3_stmt,
             when value is DbValue:
                 value
             else:
-                toDbValue(value)
+                toDb(value)
         result = bindValue(stmtHandle, idx, dbValue)
         if result notin SqliteRcOk:
             return
@@ -350,20 +350,20 @@ proc readColumn(stmtHandle: ptr abi.sqlite3_stmt, col: int32): DbValue =
     let columnType = abi.sqlite3_column_type(stmtHandle, col)
     case columnType
     of abi.SQLITE_INTEGER:
-        result = toDbValue(abi.sqlite3_column_int64(stmtHandle, col))
+        result = toDb(abi.sqlite3_column_int64(stmtHandle, col))
     of abi.SQLITE_FLOAT:
-        result = toDbValue(abi.sqlite3_column_double(stmtHandle, col))
+        result = toDb(abi.sqlite3_column_double(stmtHandle, col))
     of abi.SQLITE_TEXT:
-        result = toDbValue($abi.sqlite3_column_text(stmtHandle, col))
+        result = toDb($abi.sqlite3_column_text(stmtHandle, col))
     of abi.SQLITE_BLOB:
         let blob = abi.sqlite3_column_blob(stmtHandle, col)
         let bytes = abi.sqlite3_column_bytes(stmtHandle, col)
         var s = newSeq[byte](bytes)
         if bytes != 0:
             copyMem(addr(s[0]), blob, bytes)
-        result = toDbValue(s)
+        result = toDb(s)
     of abi.SQLITE_NULL:
-        result = toDbValue(nil)
+        result = toDb(nil)
     else:
         raiseAssert "Unexpected column type: " & $columnType
 
@@ -411,7 +411,7 @@ iterator iterateNamed[T: tuple](db: DbConn,
 # DbConn
 #
 
-proc exec*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]) =
+proc exec*(db: DbConn, sql: string, params: varargs[DbValue, toDb]) =
     ## Executes ``sql``, which must be a single SQL statement.
     runnableExamples:
         let db = openDatabase(":memory:")
@@ -500,7 +500,7 @@ proc execScript*(db: DbConn, sql: string) =
             remaining = tail
             remaining.skipLeadingWhiteSpaceAndComments()
 
-iterator iterate*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): ResultRow =
+iterator iterate*(db: DbConn, sql: string, params: varargs[DbValue, toDb]): ResultRow =
     ## Executes ``sql``, which must be a single SQL statement, and yields each result row one by one.
     assertCanUseDb db
     var lease = db.acquireStmt(sql)
@@ -525,7 +525,7 @@ iterator iterate*[T: tuple](db: DbConn, sql: string, params: T): ResultRow =
         db.releaseStmt(lease)
         db.checkRc(errorRc)
 
-proc all*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): seq[ResultRow] =
+proc all*(db: DbConn, sql: string, params: varargs[DbValue, toDb]): seq[ResultRow] =
     ## Executes ``sql``, which must be a single SQL statement, and returns all result rows.
     for row in db.iterate(sql, params):
         result.add row
@@ -535,7 +535,7 @@ proc all*[T: tuple](db: DbConn, sql: string, params: T): seq[ResultRow] =
     for row in db.iterate(sql, params):
         result.add row
 
-proc one*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): Option[ResultRow] =
+proc one*(db: DbConn, sql: string, params: varargs[DbValue, toDb]): Option[ResultRow] =
     ## Executes `sql`, which must be a single SQL statement, and returns the first result row.
     ## Returns `none(seq[DbValue])` if the result was empty.
     for row in db.iterate(sql, params):
@@ -546,7 +546,7 @@ proc one*[T: tuple](db: DbConn, sql: string, params: T): Option[ResultRow] =
     for row in db.iterate(sql, params):
         return some(row)
 
-proc value*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): Option[DbValue] =
+proc value*(db: DbConn, sql: string, params: varargs[DbValue, toDb]): Option[DbValue] =
     ## Executes `sql`, which must be a single SQL statement, and returns the first column of the first result row.
     ## Returns `none(DbValue)` if the result was empty.
     for row in db.iterate(sql, params):
@@ -642,7 +642,7 @@ proc stmt*(db: DbConn, sql: string): SqlStatement =
     let handle = prepareSql(db, sql)
     SqlStatementImpl(handle: handle, db: db).SqlStatement
     
-proc exec*(statement: SqlStatement, params: varargs[DbValue, toDbValue]) =
+proc exec*(statement: SqlStatement, params: varargs[DbValue, toDb]) =
     ## Executes `statement` with `params` as parameters.
     assertCanUseStatement statement
     var rc = statement.db.bindParams(statement.handle, params)
@@ -682,7 +682,7 @@ proc execMany*[T: tuple](statement: SqlStatement, params: openArray[T]) =
         for p in params:
             statement.exec(p)
 
-iterator iterate*(statement: SqlStatement, params: varargs[DbValue, toDbValue]): ResultRow =
+iterator iterate*(statement: SqlStatement, params: varargs[DbValue, toDb]): ResultRow =
     ## Executes ``statement`` and yields each result row one by one.
     assertCanUseStatement statement
     var errorRc: int32
@@ -708,7 +708,7 @@ iterator iterate*[T: tuple](statement: SqlStatement, params: T): ResultRow =
             resetStmt(statement.handle)
         statement.db.checkRc errorRc
 
-proc all*(statement: SqlStatement, params: varargs[DbValue, toDbValue]): seq[ResultRow] =
+proc all*(statement: SqlStatement, params: varargs[DbValue, toDb]): seq[ResultRow] =
     ## Executes ``statement`` and returns all result rows.
     assertCanUseStatement statement
     for row in statement.iterate(params):
@@ -721,7 +721,7 @@ proc all*[T: tuple](statement: SqlStatement, params: T): seq[ResultRow] =
         result.add row
 
 proc one*(statement: SqlStatement,
-        params: varargs[DbValue, toDbValue]): Option[ResultRow] =
+        params: varargs[DbValue, toDb]): Option[ResultRow] =
     ## Executes `statement` and returns the first row found.
     ## Returns `none(seq[DbValue])` if no result was found.
     assertCanUseStatement statement
@@ -735,7 +735,7 @@ proc one*[T: tuple](statement: SqlStatement, params: T): Option[ResultRow] =
         return some(row)
 
 proc value*(statement: SqlStatement,
-        params: varargs[DbValue, toDbValue]): Option[DbValue] =
+        params: varargs[DbValue, toDb]): Option[DbValue] =
     ## Executes `statement` and returns the first column of the first row found. 
     ## Returns `none(DbValue)` if no result was found.
     assertCanUseStatement statement
@@ -800,6 +800,7 @@ proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): 
 
 proc loadExtension*(db: DbConn, path: string) =
     ## Load an SQLite extension. Will raise a ``SqliteError`` exception if loading fails.
+    assertCanUseDb db
     db.checkRc abi.sqlite3_db_config(db.handle, abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, 0);
     var err: cstring
     if abi.SQLITE_ERROR == abi.sqlite3_load_extension(db.handle, path.cstring, nil, addr err):
@@ -839,24 +840,24 @@ proc columns*(row: ResultRow): seq[string] =
     row.columns
 
 proc unpack*[T: tuple](row: ResultRow, _: typedesc[T]): T =
-    ## Calls ``fromDbValue`` on each element of ``row`` and returns it
+    ## Calls ``fromDb`` on each element of ``row`` and returns it
     ## as a tuple.
     doAssert row.len == result.typeof.tupleLen,
         "Unpack expected a tuple with " & $row.len & " field(s) but found: " & $T
     var idx = 0
     for value in result.fields:
-        value = row[idx].fromDbValue(type(value))
+        value = row[idx].fromDb(type(value))
         idx.inc
 
 #
 # Deprecations
 #
 
-proc rows*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): seq[seq[DbValue]]
+proc rows*(db: DbConn, sql: string, params: varargs[DbValue, toDb]): seq[seq[DbValue]]
         {.deprecated: "use 'all' instead".} =
     db.all(sql, params).mapIt(it.values)
     
-iterator rows*(db: DbConn, sql: string, params: varargs[DbValue, toDbValue]): seq[DbValue]
+iterator rows*(db: DbConn, sql: string, params: varargs[DbValue, toDb]): seq[DbValue]
         {.deprecated: "use 'iterate' instead".} =
     for row in db.all(sql, params):
         yield row.values

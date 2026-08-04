@@ -20,7 +20,7 @@ statements. Explicit statements created with ``stmt`` own their handles and must
 Executing SQL
 #############
 
-The `exec <#exec,DbConn,string,varargs[DbValue,toDbValue]>`_ procedure can be used to execute a single SQL statement.
+The `exec <#exec,DbConn,string,varargs[DbValue,toDb]>`_ procedure can be used to execute a single SQL statement.
 The `execScript <#execScript,DbConn,string>`_ procedure is used to execute several statements, but it doesn't support
 parameter substitution.
 
@@ -66,10 +66,10 @@ Reading data
 
 Four different procedures for reading data are available:
 
-- `all <#all,DbConn,string,varargs[DbValue,toDbValue]>`_: procedure returning all result rows
-- `iterate <#iterate.i,DbConn,string,varargs[DbValue,toDbValue]>`_: iterator yielding each result row one by one
-- `one <#one,DbConn,string,varargs[DbValue,toDbValue]>`_: procedure returning the first result row, or `none` if no result row exists
-- `value <#value,DbConn,string,varargs[DbValue,toDbValue]>`_: procedure returning the first column of the first result row, or `none` if no result row exists
+- `all <#all,DbConn,string,varargs[DbValue,toDb]>`_: procedure returning all result rows
+- `iterate <#iterate.i,DbConn,string,varargs[DbValue,toDb]>`_: iterator yielding each result row one by one
+- `one <#one,DbConn,string,varargs[DbValue,toDb]>`_: procedure returning the first result row, or `none` if no result row exists
+- `value <#value,DbConn,string,varargs[DbValue,toDb]>`_: procedure returning the first column of the first result row, or `none` if no result row exists
 
 Note that the procedures `one` and `value` returns the result wrapped in an `Option`. See the standard library
 `options module <https://nim-lang.org/docs/options.html>`_ for documentation on how to deal with `Option` values.
@@ -85,27 +85,27 @@ module doesn't need to be explicitly imported for typical usage.
         echo row["name"].strVal # Prints the name
         echo row[1].intVal      # Prints the age
         # Above we're using the raw DbValue's directly. Instead, we can unpack the
-        # DbValue using the fromDbValue procedure:
-        echo fromDbValue(row[0], string) # Prints the name
-        echo fromDbValue(row[1], int)    # Prints the age
+        # DbValue using the fromDb procedure:
+        echo fromDb(row[0], string) # Prints the name
+        echo fromDb(row[1], int)    # Prints the age
         # Alternatively, the entire row can be unpacked at once:
         let (name, age) = row.unpack((string, int))
         # Unpacking the value is preferable as it makes it possible to handle
         # bools, enums, distinct types, nullable types and more. For example, nullable
         # types are handled using Option[T]:
-        echo fromDbValue(row[0], Option[string]) # Will work even if the db value is NULL
+        echo fromDb(row[0], Option[string]) # Will work even if the db value is NULL
     
     # Example of reading a single value. In this case, 'value' will be of type `Option[DbValue]`.
     let value = db.one("SELECT age FROM Person WHERE name = ?", "John Doe")
     if value.isSome:
-        echo fromDbValue(value.get, int) # Prints age of John Doe
+        echo fromDb(value.get, int) # Prints age of John Doe
 
 
 Inserting data in bulk
 ######################
 
-The `exec <#exec,DbConn,string,varargs[DbValue,toDbValue]>`_ procedure works fine for inserting single rows,
-but it gets awkward when inserting many rows. For this purpose the `execMany <#execMany,DbConn,string,varargs[DbValue,toDbValue]>`_
+The `exec <#exec,DbConn,string,varargs[DbValue,toDb]>`_ procedure works fine for inserting single rows,
+but it gets awkward when inserting many rows. For this purpose the `execMany <#execMany,DbConn,string,seq[seq[DbValue]]>`_
 procedure can be used instead. It executes the same SQL repeatedly, but with different parameters each time.
 
 .. code-block:: nim
@@ -193,7 +193,7 @@ are executing.
 Supported types
 ###############
 
-For a type to be supported when using unpacking and parameter substitution the procedures `toDbValue` and `fromDbValue`
+For a type to be supported when using unpacking and parameter substitution the procedures `toDb` and `fromDb`
 must be implemented for the type. Below is table describing which types are supported by default and to which SQLite
 type they are mapped to:
 
@@ -207,15 +207,15 @@ Nim type              SQLite type
 ``Option[T]``         | ``NULL`` if value is ``none(T)``, otherwise the type that ``T`` would use
 ====================  =================================================================================
 
-This can be extended by implementing `toDdValue`  and `fromDbValue` for other types on your own. Below is an example
+This can be extended by implementing `toDb` and `fromDb` for other types. Below is an example
 how support for `times.Time` can be added:
 
 .. code-block:: nim
 
     import times
 
-    proc toDbValue(t: Time): DbValue =
+    proc toDb(t: Time): DbValue =
         DbValue(kind: sqliteInteger, intVal: toUnix(t))
 
-    proc fromDbValue(value: DbValue, T: typedesc[Time]): Time =
+    proc fromDb(value: DbValue, T: typedesc[Time]): Time =
         fromUnix(value.intval)
