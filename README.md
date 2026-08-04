@@ -6,7 +6,7 @@
 [Documentation](https://titanomachy.github.io/nim-sqlite/) · [MIT License](LICENSE)
 
 > [!WARNING]
-> Beta Notice: nim-sqlite is a pre-1.0 package under active development.
+> **Beta Notice:** nim-sqlite is a pre-1.0 package under active development.
 > While it is fully functional today, future releases may introduce breaking changes,
 > and the public API offers no backward compatibility guarantees.
 
