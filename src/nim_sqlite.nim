@@ -356,7 +356,12 @@ proc readColumn(stmtHandle: ptr abi.sqlite3_stmt, col: int32): DbValue =
     of abi.SQLITE_FLOAT:
         result = toDb(abi.sqlite3_column_double(stmtHandle, col))
     of abi.SQLITE_TEXT:
-        result = toDb($abi.sqlite3_column_text(stmtHandle, col))
+        let text = abi.sqlite3_column_text(stmtHandle, col)
+        let bytes = abi.sqlite3_column_bytes(stmtHandle, col)
+        var s = newString(bytes)
+        if bytes != 0:
+            copyMem(addr(s[0]), text, bytes)
+        result = toDb(s)
     of abi.SQLITE_BLOB:
         let blob = abi.sqlite3_column_blob(stmtHandle, col)
         let bytes = abi.sqlite3_column_bytes(stmtHandle, col)

@@ -132,6 +132,19 @@ test "db.value no rows":
     withDb:
         check db.value("SELECT * FROM Person Where age = 0") == none(DbValue)
 
+test "TEXT values preserve NUL bytes":
+    withDb:
+        for expected in ["a\0b", "\0", "\0a", "a\0", ""]:
+            let actual = db.value("SELECT ?", expected).get
+            check actual.kind == sqliteText
+            check actual.strVal == expected
+            check actual.strVal.len == expected.len
+
+        let generated = db.value("SELECT CAST(X'610062' AS TEXT)").get
+        check generated.kind == sqliteText
+        check generated.strVal == "a\0b"
+        check generated.strVal.len == 3
+
 test "db.exec":
     withDb:
         db.exec("""
