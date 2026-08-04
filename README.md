@@ -177,7 +177,7 @@ The built-in conversions are:
 | `seq[byte]` | `BLOB` |
 | `Option[T]` or `nil` | `NULL` when empty; otherwise the mapping for `T` |
 
-Use `toDb` to convert a Nim value explicitly and `fromDb` to convert a result. You can support application-specific types by defining matching overloads:
+Use `toDb` to convert a Nim value explicitly and `fromDb` to convert a result. Built-in `fromDb` conversions require the matching SQLite storage class and raise `SqliteError` on a mismatch. You can support application-specific types by defining matching overloads:
 
 ```nim
 import std/times
@@ -186,10 +186,10 @@ proc toDb(value: Time): DbValue =
   DbValue(kind: sqliteInteger, intVal: value.toUnix)
 
 proc fromDb(value: DbValue, _: typedesc[Time]): Time =
-  fromUnix(value.intVal)
+  fromUnix(value.fromDb(int))
 ```
 
-These overloads also allow `Time` values to participate in parameter binding and tuple unpacking.
+These overloads also allow `Time` values to participate in parameter binding and tuple unpacking. Delegating custom decoding to a built-in `fromDb` conversion preserves storage-class validation.
 
 ## Examples
 

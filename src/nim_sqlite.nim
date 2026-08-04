@@ -174,24 +174,38 @@ proc toDb*[T: type(nil)](val: T): DbValue =
     ## Convert a nil literal to a DbValue.
     DbValue(kind: sqliteNull)
 
+proc requireKind(value: DbValue, expected: DbValueKind, target: string) =
+    if value.kind != expected:
+        raise newSqliteError("Cannot convert DbValue of kind " & $value.kind &
+            " to " & target & "; expected " & $expected & ".")
+
 proc fromDb*(value: DbValue, T: typedesc[Ordinal]): T =
     ## Convert a DbValue to an ordinal.
+    ## Raises ``SqliteError`` unless ``value`` has the ``sqliteInteger`` kind.
+    value.requireKind(sqliteInteger, $T)
     value.intVal.T
 
 proc fromDb*(value: DbValue, T: typedesc[SomeFloat]): float64 =
     ## Convert a DbValue to a float.
+    ## Raises ``SqliteError`` unless ``value`` has the ``sqliteReal`` kind.
+    value.requireKind(sqliteReal, $T)
     value.floatVal
 
 proc fromDb*(value: DbValue, T: typedesc[string]): string =
     ## Convert a DbValue to a string.
+    ## Raises ``SqliteError`` unless ``value`` has the ``sqliteText`` kind.
+    value.requireKind(sqliteText, $T)
     value.strVal
 
 proc fromDb*(value: DbValue, T: typedesc[seq[byte]]): seq[byte] =
     ## Convert a DbValue to a sequence of bytes.
+    ## Raises ``SqliteError`` unless ``value`` has the ``sqliteBlob`` kind.
+    value.requireKind(sqliteBlob, $T)
     value.blobVal
 
 proc fromDb*[T](value: DbValue, _: typedesc[Option[T]]): Option[T] =
     ## Convert a DbValue to an optional value.
+    ## Non-NULL values retain the storage-class validation for ``T``.
     if value.kind == sqliteNull:
         none(T)
     else:

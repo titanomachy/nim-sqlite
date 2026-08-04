@@ -631,11 +631,34 @@ test "Type mappings":
             let unpackedRow = rows[0].unpack((string, bool, float, Option[int], seq[byte]))
             check unpackedRow[1]
 
+test "fromDb validates the SQLite storage class":
+    expect SqliteError:
+        discard toDb("1").fromDb(int)
+    expect SqliteError:
+        discard toDb(1).fromDb(float)
+    expect SqliteError:
+        discard toDb(1).fromDb(string)
+    expect SqliteError:
+        discard toDb(1).fromDb(seq[byte])
+    expect SqliteError:
+        discard toDb(nil).fromDb(int)
+    expect SqliteError:
+        discard toDb("1").fromDb(Option[int])
+
+    withDb:
+        db.exec("CREATE TABLE MixedStorage(value)")
+        db.exec("INSERT INTO MixedStorage(value) VALUES(?)", 1)
+        db.exec("INSERT INTO MixedStorage(value) VALUES(?)", "not an integer")
+        let rows = db.all("SELECT value FROM MixedStorage ORDER BY rowid")
+        check rows[0].unpack((int,)) == (1,)
+        expect SqliteError:
+            discard rows[1].unpack((int,))
+
 proc toDb(t: Time): DbValue =
     DbValue(kind: sqliteInteger, intVal: toUnix(t))
 
 proc fromDb(value: DbValue, T: typedesc[Time]): Time =
-    fromUnix(value.intval)
+    fromUnix(value.fromDb(int))
 
 test "Custom type mapping":
     withDb:

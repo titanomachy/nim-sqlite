@@ -221,4 +221,4 @@ how support for `times.Time` can be added:
         DbValue(kind: sqliteInteger, intVal: toUnix(t))
 
     proc fromDb(value: DbValue, T: typedesc[Time]): Time =
-        fromUnix(value.intval)
+        fromUnix(value.fromDb(int))

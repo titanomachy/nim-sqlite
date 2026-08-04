@@ -5,7 +5,7 @@ proc toDb(value: Time): DbValue =
     DbValue(kind: sqliteInteger, intVal: value.toUnix)
 
 proc fromDb(value: DbValue, _: typedesc[Time]): Time =
-    fromUnix(value.intVal)
+    fromUnix(value.fromDb(int))
 
 let db = openDatabase(":memory:")
 
