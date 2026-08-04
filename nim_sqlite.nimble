@@ -1,7 +1,7 @@
 # Package
 
-version       = "0.2.0"
-author        = "Oscar Nihlgård (original author), titanomachy (fork maintainer)"
+version       = "0.3.0"
+author        = "titanomachy"
 description   = "A thin, type-safe SQLite wrapper for Nim"
 license       = "MIT"
 srcDir        = "src"

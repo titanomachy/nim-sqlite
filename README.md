@@ -5,7 +5,7 @@
 [Documentation](https://titanomachy.github.io/nim-sqlite/) · [MIT License](LICENSE)
 
 > [!WARNING]
-> **Alpha software:** nim-sqlite is a pre-1.0 package under active development.
+> **Beta software:** nim-sqlite is a pre-1.0 package under active development.
 > Its public API may change without compatibility guarantees.
 
 `nim-sqlite` is a focused, type-safe SQLite library for Nim. It stays close to SQLite instead of presenting a generic database abstraction, while adding:

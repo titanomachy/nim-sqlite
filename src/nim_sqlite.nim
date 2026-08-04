@@ -873,7 +873,7 @@ proc `[]`*(row: ResultRow, column: string): DbValue =
     ## Access a column in the result row based on column name.
     ## The column name must be unambiguous.
     let idx = row.columns.find(column)
-    assert idx != -1, "Column does not exist in row: '" & column & "'"
+    doAssert idx != -1, "Column does not exist in row: '" & column & "'"
     doAssert count(row.columns, column) == 1, "Column exists multiple times in row: '" & column & "'"
     row.values[idx]
 
