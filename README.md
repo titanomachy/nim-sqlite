@@ -43,7 +43,7 @@ It builds on [nim-sqlite3-abi](https://github.com/arnetheduck/nim-sqlite3-abi), 
 Install the current repository with Nimble:
 
 ```sh
-nimble install https://github.com/titanomachy/nim-sqlite
+nimble install nim_sqlite
 ```
 
 Then import the module as `nim_sqlite`:
