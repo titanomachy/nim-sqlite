@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 This changelog covers changes made after version 0.2.0.
 
+## [Unreleased]
+
+### Fixed
+
+- Guard active connection and explicit-statement operations against destructive reentrancy. Closing a connection, or finalizing or reusing an explicit statement, is now rejected for the complete bind/execute/reset lifecycle, including user-defined named-parameter conversions.
+- Restore connection and statement operation state after binding errors, iterator early exits, and exceptional exits so handles remain safe and reusable.
+- Drive `exec`, prepared-statement `exec`, and every statement in `execScript` through `SQLITE_DONE`, ensuring errors that occur after an initial result row are reported and cleaned up.
+- Replace the unbounded trailing-SQL comment scanner with SQLite-driven parsing. Bare line comments and other non-SQL tails are accepted safely, while incomplete or invalid tails fail before a single-statement operation executes.
+
 ## [0.3.0] - 2026-08-04
 
 ### Added
@@ -34,4 +43,5 @@ This changelog covers changes made after version 0.2.0.
 - Roll back an active transaction when `COMMIT` fails, while preserving the original commit error.
 - Preserve embedded NUL bytes when reading SQLite `TEXT` values.
 
+[Unreleased]: https://github.com/titanomachy/nim-sqlite/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/titanomachy/nim-sqlite/compare/v0.2.0...v0.3.0

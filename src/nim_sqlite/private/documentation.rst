@@ -9,7 +9,9 @@ A database connection is opened by calling the `openDatabase <#openDatabase,stri
 path to the database file as an argument. If the file doesn't exist, it will be created. An in-memory database can
 be created by using the special path `":memory:"` as an argument. Once the database connection is no longer needed,
 `close <#close,DbConn>`_ must be called to prevent memory leaks. Closing a connection finalizes its internally cached
-statements. Explicit statements created with ``stmt`` own their handles and must be finalized separately.
+statements. Explicit statements created with ``stmt`` own their handles and must be finalized separately. Closing is
+rejected with ``AssertionDefect`` while a connection operation is active, preventing callbacks and user-defined
+conversions from invalidating a statement that is being bound or executed.
 
 .. code-block:: nim
 
@@ -22,7 +24,12 @@ Executing SQL
 
 The `exec <#exec,DbConn,string,varargs[DbValue,toDb]>`_ procedure can be used to execute a single SQL statement.
 The `execScript <#execScript,DbConn,string>`_ procedure is used to execute several statements, but it doesn't support
-parameter substitution.
+parameter substitution. Single-statement operations parse the complete input before executing: trailing whitespace,
+extra semicolons, and SQLite comments do not count as another statement, while a second statement, invalid trailing
+SQL, or incomplete input raises ``SqliteError`` before the first statement executes. Empty, semicolon-only, and
+comment-only scripts are no-ops. If a statement produces rows, ``exec`` and ``execScript`` discard them but continue
+stepping until the statement completes. A runtime error on any row raises ``SqliteError``. When ``execScript`` starts
+its transaction, such an error rolls back the script.
 
 .. code-block:: nim
 
@@ -190,8 +197,12 @@ setting the `cacheSize` parameter when opening the database:
 Cached statements are leased to one connection-level operation at a time. If nested or reentrant code requests SQL
 whose cached statement is already leased or busy, ``nim_sqlite`` prepares a temporary statement and finalizes it
 afterward. Cache eviction skips leased and busy statements. This keeps nested queries independent, including when the
-same SQL is used with different parameters. Explicit statements created with ``stmt`` reject reentrant use while they
-are executing.
+same SQL is used with different parameters.
+
+Explicit statements created with ``stmt`` are single-use for their complete binding and execution lifecycle. Reusing
+or finalizing the same statement, or closing its connection, from an active iterator or a user-defined named-parameter
+``toDb`` conversion raises ``AssertionDefect``. The guard is released after successful execution, binding failures,
+exceptions, and iterator early exits, so the statement remains reusable afterward.
 
 Supported types
 ###############

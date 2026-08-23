@@ -1,9 +1,22 @@
-import std / [unittest, options, sequtils, times]
+import std / [unittest, options, sequtils, strutils, times]
 import nim_sqlite
 from nim_sqlite / sqlite3_abi as abi import nil
 
 const SelectPersons = "SELECT name, age FROM Person"
 const SelectJohnDoe = "SELECT name, age FROM Person WHERE name = 'John Doe'"
+const LateRowErrorPositional = """
+    WITH RECURSIVE Input(value) AS (
+        VALUES(1)
+        UNION ALL
+        SELECT value + 1 FROM Input WHERE value < 2
+    )
+    SELECT CASE
+        WHEN value = 2 AND ? THEN abs(-9223372036854775808)
+        ELSE value
+    END
+    FROM Input
+"""
+const LateRowErrorNamed = LateRowErrorPositional.replace("?", ":fail")
 type SelectPersonsRowType = tuple[name: string, age: Option[int]]
 
 proc writePersons(db: DbConn) {.used.} =
@@ -23,6 +36,30 @@ type ReentrantParam = object
 proc toDb(value: ReentrantParam): DbValue =
     discard value.db.one("SELECT :first, :second", (first: 100, second: 200))
     toDb(22)
+
+type ClosingParam = object
+    db: DbConn
+
+proc toDb(value: ClosingParam): DbValue =
+    value.db.close()
+    toDb(23)
+
+type
+    StatementLifecycleAction = enum
+        finalizeStatement,
+        reuseStatement
+
+    StatementLifecycleParam = object
+        statement: SqlStatement
+        action: StatementLifecycleAction
+
+proc toDb(value: StatementLifecycleParam): DbValue =
+    case value.action
+    of finalizeStatement:
+        value.statement.finalize()
+    of reuseStatement:
+        discard value.statement.value((value: toDb(24),))
+    toDb(25)
 
 const seedScript = staticRead("./seed_test_db.sql")
 
@@ -95,6 +132,23 @@ test "db statement lease begins before named parameter conversion":
         check row[1].intVal == 22
         check db.preparedStatementCount == statementsBefore + 1
 
+test "db close is rejected during named parameter conversion":
+    for cacheSize in [0, 1]:
+        let db = openDatabase(":memory:", cacheSize = cacheSize)
+        try:
+            let statementsBefore = db.preparedStatementCount
+            expect AssertionDefect:
+                discard db.value("SELECT :value", (value: ClosingParam(db: db),))
+
+            check db.isOpen
+            let statementsAfterFailure = db.preparedStatementCount
+            check db.value("SELECT :value", (value: toDb(26),)).get.intVal == 26
+            check db.preparedStatementCount == statementsAfterFailure
+            if cacheSize == 0:
+                check statementsAfterFailure == statementsBefore
+        finally:
+            db.close()
+
 test "db cache does not evict a busy statement":
     let db = openDatabase(":memory:", cacheSize = 1)
     try:
@@ -157,6 +211,22 @@ test "db.exec":
         db.exec("DELETE FROM Person WHERE name = ?", "John Persson")
         check db.all(SelectPersons).len == 2
 
+test "db.exec runs row-producing statements to completion":
+    withDb:
+        check db.one(LateRowErrorNamed, (fail: 1,)).get[0].intVal == 1
+        let statementsAfterFirstRow = db.preparedStatementCount
+
+        expect SqliteError:
+            db.exec(LateRowErrorNamed, (fail: 1,))
+        check db.preparedStatementCount == statementsAfterFirstRow
+
+        db.exec(LateRowErrorNamed, (fail: 0,))
+        check db.preparedStatementCount == statementsAfterFirstRow
+
+        expect SqliteError:
+            db.exec(LateRowErrorPositional, 1)
+        db.exec(LateRowErrorPositional, 0)
+
 test "db named parameters":
     withDb:
         db.exec("""
@@ -206,17 +276,47 @@ test "db.exec trailing comment":
         db.exec("DELETE FROM Person WHERE name = ?", "John Persson")
         check db.all(SelectPersons).len == 2
 
+test "db.exec accepts generated non-SQL tails":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        const tailParts = [
+            "",
+            " ",
+            "\t\r\n\f",
+            ";",
+            ";;",
+            "-- trailing comment",
+            "-- trailing comment\n",
+            "/* trailing comment */"
+        ]
+
+        # Exercise combinations rather than teaching the wrapper its own SQL
+        # comment grammar. SQLite must identify every generated tail as
+        # containing no further statement.
+        for first in tailParts:
+            for second in tailParts:
+                for third in tailParts:
+                    db.exec("SELECT 1;" & first & second & third)
+                    check db.preparedStatementCount == 0
+    finally:
+        db.close()
+
 test "db.exec trailing syntax error":
-    withDb:
-        expect SqliteError:
-            db.exec("""
-                INSERT INTO Person(name, age)
-                VALUES(?, ?);
-                /*
-                comment
-                *
-            """, "John Persson", 103)
-        check db.all(SelectPersons).len == 2
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        db.exec("CREATE TABLE ExecutionLog(value INTEGER)")
+        for invalidTail in [
+            "/*",
+            "/* unterminated",
+            "SELECT FROM",
+            "'unterminated string"
+        ]:
+            expect SqliteError:
+                db.exec("INSERT INTO ExecutionLog VALUES(1);" & invalidTail)
+            check db.value("SELECT COUNT(*) FROM ExecutionLog").get.intVal == 0
+            check db.preparedStatementCount == 0
+    finally:
+        db.close()
 
 test "db.exec with multiple SQL statements":
     withDb:
@@ -302,6 +402,18 @@ test "db.execScript ignores scripts without statements":
             db.execScript(script)
         check db.all(SelectPersons).len == 2
 
+test "db.execScript rejects invalid trailing SQL":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        db.exec("CREATE TABLE ExecutionLog(value INTEGER)")
+        for invalidTail in ["/*", "SELECT FROM"]:
+            expect SqliteError:
+                db.execScript("INSERT INTO ExecutionLog VALUES(1);" & invalidTail)
+            check db.value("SELECT COUNT(*) FROM ExecutionLog").get.intVal == 0
+            check db.preparedStatementCount == 0
+    finally:
+        db.close()
+
 test "db.execScript in transaction":
     withDb:
         db.transaction:
@@ -327,6 +439,33 @@ test "db.execScript with failure":
             """)
         let rows = db.all(SelectPersons)
         check rows.len == 2
+
+test "db.execScript reports errors after the first result row":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        db.exec("CREATE TABLE ExecutionLog(value INTEGER)")
+        expect SqliteError:
+            db.execScript("""
+                INSERT INTO ExecutionLog(value) VALUES(1);
+                WITH RECURSIVE Input(value) AS (
+                    VALUES(1)
+                    UNION ALL
+                    SELECT value + 1 FROM Input WHERE value < 2
+                )
+                SELECT CASE
+                    WHEN value = 2 THEN abs(-9223372036854775808)
+                    ELSE value
+                END
+                FROM Input;
+                INSERT INTO ExecutionLog(value) VALUES(2);
+            """)
+
+        check db.preparedStatementCount == 0
+        check db.value("SELECT COUNT(*) FROM ExecutionLog").get.intVal == 0
+        db.exec("INSERT INTO ExecutionLog(value) VALUES(3)")
+        check db.value("SELECT value FROM ExecutionLog").get.intVal == 3
+    finally:
+        db.close()
 
 test "db.transaction with return":
     withDb:
@@ -517,6 +656,25 @@ test "stmt named parameters":
         check selectStmt.value((name: "Prepared Two",)).get.intVal == 32
         selectStmt.finalize()
 
+test "stmt.exec runs row-producing statements to completion":
+    withDb:
+        let stmt = db.stmt(LateRowErrorNamed)
+        try:
+            check stmt.one((fail: 1,)).get[0].intVal == 1
+
+            expect SqliteError:
+                stmt.exec((fail: 1,))
+            check stmt.isAlive
+
+            stmt.exec((fail: 0,))
+            check stmt.isAlive
+
+            expect SqliteError:
+                stmt.exec((fail: 1,))
+            check stmt.isAlive
+        finally:
+            stmt.finalize()
+
 test "stmt.iterate busy":
     withDb:
         let stmt = db.stmt(SelectPersons)
@@ -542,6 +700,28 @@ test "stmt.iterate close/finalize":
         expect AssertionDefect:
             for row in stmt.iterate():
                 stmt.finalize()
+
+test "stmt lifecycle changes are rejected during named parameter conversion":
+    withDb:
+        let stmt = db.stmt("SELECT :value")
+
+        expect AssertionDefect:
+            discard stmt.value((value: ClosingParam(db: db),))
+        check db.isOpen
+        check stmt.isAlive
+
+        expect AssertionDefect:
+            discard stmt.value((value: StatementLifecycleParam(
+                statement: stmt, action: finalizeStatement),))
+        check stmt.isAlive
+
+        expect AssertionDefect:
+            discard stmt.value((value: StatementLifecycleParam(
+                statement: stmt, action: reuseStatement),))
+        check stmt.isAlive
+
+        check stmt.value((value: toDb(27),)).get.intVal == 27
+        stmt.finalize()
 
 test "stmt.isAlive":
     withDb:

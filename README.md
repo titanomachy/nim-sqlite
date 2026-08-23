@@ -87,7 +87,7 @@ Ada: some(36)
 Grace: none(int)
 ```
 
-Always close a connection when it is no longer needed. A `try`/`finally` block is a convenient way to guarantee that cleanup. Closing a connection finalizes the statements in its internal cache. Explicit statements created with `stmt` have their own lifecycle and must be finalized separately.
+Always close a connection when it is no longer needed. A `try`/`finally` block is a convenient way to guarantee that cleanup. Closing a connection finalizes the statements in its internal cache. Explicit statements created with `stmt` have their own lifecycle and must be finalized separately. Closing is rejected with `AssertionDefect` while a connection operation is active, which keeps callbacks and user-defined conversions from invalidating a statement that is being bound or executed.
 
 ## Executing SQL safely
 
@@ -105,6 +105,8 @@ echo db.changes # rows changed by the most recent INSERT, UPDATE, or DELETE
 
 Bound parameters handle quoting and data types correctly. Do not build SQL by interpolating untrusted values into the SQL string.
 Passing multiple statements to a single-statement operation raises `SqliteError`; use `execScript` for scripts containing several statements.
+The complete input is parsed before a single-statement operation executes. Trailing whitespace, extra semicolons, and SQLite comments—including a final `--` comment without a newline—do not count as another statement. A second statement, invalid trailing SQL, or an incomplete block comment or quoted token raises `SqliteError` before the first statement executes.
+If an `exec` statement produces rows—for example, `SELECT` or a statement with `RETURNING`—the rows are discarded, but SQLite is stepped through every row until the statement completes. A runtime error on any row raises `SqliteError`.
 
 For order-independent binding, use SQLite `:name` parameters and pass a named tuple. Each tuple field binds the parameter with the same name, regardless of where either one appears:
 
@@ -120,7 +122,7 @@ db.exec(
 
 Named tuples are supported by `exec`, `iterate`, `all`, `one`, and `value`, as well as their prepared-statement counterparts. `execMany` accepts an array or sequence of named tuples. Repeated occurrences of the same parameter, such as `:name = :name`, share one tuple field. Missing parameters, unknown tuple fields, or mixing a named tuple with positional `?` parameters raises `SqliteError`.
 
-Use `execScript` when schema setup or a migration contains several statements. The complete script runs in a transaction:
+Use `execScript` when schema setup or a migration contains several statements. Empty, semicolon-only, and comment-only scripts are no-ops. Incomplete or invalid input raises `SqliteError`. Every statement is run to completion and the complete script runs in a transaction. When `execScript` starts that transaction, a runtime error after an earlier result row aborts and rolls back the script:
 
 ```nim
 db.execScript("""
@@ -243,7 +245,9 @@ The transaction commits when the block finishes normally and rolls back when an 
 
 Normal connection methods automatically cache recently prepared SQL statements. The default cache holds 100 statements, so manual statement management is usually unnecessary. Set `cacheSize = 0` when opening a database to disable the cache.
 
-Cached statements are leased to one connection-level operation at a time. If nested or reentrant code executes SQL whose cached statement is already leased or busy, the operation uses a temporary statement and finalizes it afterward. Cache eviction also skips leased and busy statements. This keeps nested queries independent, including when they use the same SQL with different parameters. Explicit statements created with `stmt` are single-use while executing and reject reentrant use.
+Cached statements are leased to one connection-level operation at a time. If nested or reentrant code executes SQL whose cached statement is already leased or busy, the operation uses a temporary statement and finalizes it afterward. Cache eviction also skips leased and busy statements. This keeps nested connection queries independent, including when they use the same SQL with different parameters.
+
+Explicit statements created with `stmt` are single-use for their complete binding and execution lifecycle. Reusing or finalizing the same statement, or closing its connection, from an active iterator or a user-defined named-parameter `toDb` conversion raises `AssertionDefect`. The guard is released after successful execution, binding failures, exceptions, and iterator early exits, so the statement remains reusable afterward.
 
 For explicit reuse, prepare and finalize a statement yourself:
 

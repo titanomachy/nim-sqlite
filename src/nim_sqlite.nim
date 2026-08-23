@@ -16,12 +16,14 @@ type
     DbConnImpl = ref object 
         handle: ptr abi.sqlite3 ## The underlying SQLite3 handle
         cache: StmtCache
+        activeOperations: int
 
     DbConn* = distinct DbConnImpl ## Encapsulates a database connection.
 
     SqlStatementImpl = ref object
         handle: ptr abi.sqlite3_stmt
         db: DbConn
+        inUse: bool
 
     SqlStatement* = distinct SqlStatementImpl ## A prepared SQL statement.
 
@@ -67,8 +69,6 @@ type
         values: seq[DbValue]
         columns: seq[string]
 
-const SqliteRcOk = [ abi.SQLITE_OK, abi.SQLITE_DONE, abi.SQLITE_ROW ]
-
 # Forward declarations
 proc isInTransaction*(db: DbConn): bool {.noSideEffect.}
 proc isOpen*(db: DbConn): bool {.noSideEffect, inline.}
@@ -90,8 +90,28 @@ template assertCanUseStatement(statement: SqlStatement, busyOk: static[bool] = f
     doAssert not statement.db.handle.isNil,
         "Statement cannot be used because the database connection has been closed"
     when not busyOk:
-        doAssert 0 == abi.sqlite3_stmt_busy(statement.handle),
-            "Statement cannot be used while inside the 'all' iterator"
+        doAssert not SqlStatementImpl(statement).inUse,
+            "Statement cannot be used while another operation is active"
+
+proc beginOperation(db: DbConn) =
+    assertCanUseDb db
+    DbConnImpl(db).activeOperations.inc
+
+proc endOperation(db: DbConn) =
+    doAssert DbConnImpl(db).activeOperations > 0,
+        "Database operation guard is unbalanced"
+    DbConnImpl(db).activeOperations.dec
+
+proc beginOperation(statement: SqlStatement) =
+    assertCanUseStatement statement
+    statement.db.beginOperation()
+    SqlStatementImpl(statement).inUse = true
+
+proc endOperation(statement: SqlStatement) =
+    doAssert SqlStatementImpl(statement).inUse,
+        "Statement operation guard is unbalanced"
+    SqlStatementImpl(statement).inUse = false
+    statement.db.endOperation()
 
 proc newSqliteError(db: DbConn): ref SqliteError =
     ## Raises a SqliteError exception.
@@ -101,43 +121,9 @@ proc newSqliteError(msg: string): ref SqliteError =
     ## Raises a SqliteError exception.
     (ref SqliteError)(msg: msg)
 
-template checkRc(db: DbConn, rc: Rc) =
-    if rc notin SqliteRcOk:
+template checkOk(db: DbConn, rc: Rc) =
+    if rc != abi.SQLITE_OK:
         raise newSqliteError(db)
-
-proc skipLeadingWhiteSpaceAndComments(sql: var cstring) =
-    let original = sql
-
-    template `&+`(s: cstring, offset: int): cstring =
-        cast[cstring](cast[uint](s) + offset.uint)
-
-    while true:
-        case sql[0]
-        of {' ', '\t', '\v', '\r', '\l', '\f'}:
-            sql = sql &+ 1
-        of '-':
-            if sql[1] == '-':
-                sql = sql &+ 2
-                while sql[0] != '\n':
-                    sql = sql &+ 1
-                    if sql[0] == '\0':
-                        return
-                sql = sql &+ 1
-            else:
-                return;
-        of '/':
-            if sql[1] == '*':
-                sql = sql &+ 2
-                while sql[0] != '*' or sql[1] != '/':
-                    sql = sql &+ 1
-                    if sql[0] == '\0':
-                        sql = original
-                        return
-                sql = sql &+ 2
-            else:
-                return;
-        else:
-            return
 
 proc resetStmt(stmtHandle: ptr abi.sqlite3_stmt) =
     discard abi.sqlite3_reset(stmtHandle)
@@ -276,7 +262,7 @@ proc bindParams(db: DbConn, stmtHandle: ptr abi.sqlite3_stmt, params: varargs[Db
     var idx = 1'i32
     for value in params:
         result = bindValue(stmtHandle, idx, value)
-        if result notin SqliteRcOk:
+        if result != abi.SQLITE_OK:
             return
         idx.inc
 
@@ -304,7 +290,7 @@ proc bindNamedParams[T: tuple](db: DbConn, stmtHandle: ptr abi.sqlite3_stmt,
             else:
                 toDb(value)
         result = bindValue(stmtHandle, idx, dbValue)
-        if result notin SqliteRcOk:
+        if result != abi.SQLITE_OK:
             return
         bound[idx] = true
 
@@ -317,15 +303,43 @@ proc bindNamedParams[T: tuple](db: DbConn, stmtHandle: ptr abi.sqlite3_stmt,
             raise newSqliteError("No value was provided for named parameter '" &
                 $parameterName & "'.")
 
+proc validateCompleteSql(sql: string) =
+    # sqlite3_complete expects a terminating semicolon. Add one after a
+    # newline so a valid final `--` comment cannot consume it. This catches
+    # unterminated block comments and quoted tokens before preparation can
+    # absorb them into an otherwise valid first statement.
+    let terminatedSql = sql & "\n;"
+    if abi.sqlite3_complete(terminatedSql.cstring) == 0:
+        raise newSqliteError("sqlite error: incomplete SQL input")
+
+proc containsSqlStatement(db: DbConn, sql: cstring): bool =
+    var remaining = sql
+    while not remaining.isNil and remaining[0] != '\0':
+        var stmtHandle: ptr abi.sqlite3_stmt
+        var tail: cstring
+        try:
+            let rc = abi.sqlite3_prepare_v2(db.handle, remaining, -1,
+                addr stmtHandle, addr tail)
+            db.checkOk(rc)
+            if not stmtHandle.isNil:
+                return true
+        finally:
+            if not stmtHandle.isNil:
+                discard abi.sqlite3_finalize(stmtHandle)
+
+        if tail.isNil or tail == remaining:
+            raise newSqliteError("SQLite did not advance while parsing SQL input.")
+        remaining = tail
+
 proc prepareSql(db: DbConn, sql: string): ptr abi.sqlite3_stmt =
     var stmtHandle: ptr abi.sqlite3_stmt
     var tail: cstring
     try:
+        validateCompleteSql(sql)
         let rc = abi.sqlite3_prepare_v2(db.handle, sql.cstring, sql.len.cint + 1,
             addr stmtHandle, addr tail)
-        db.checkRc(rc)
-        tail.skipLeadingWhiteSpaceAndComments()
-        if tail.len != 0:
+        db.checkOk(rc)
+        if db.containsSqlStatement(tail):
             raise newSqliteError(
                 "Only a single SQL statement is allowed in this context. " &
                 "To execute several SQL statements, use 'execScript'.")
@@ -389,10 +403,21 @@ proc readColumn(stmtHandle: ptr abi.sqlite3_stmt, col: int32): DbValue =
     else:
         raiseAssert "Unexpected column type: " & $columnType
 
+proc executeToCompletion(db: DbConn, stmtHandle: ptr abi.sqlite3_stmt) =
+    while true:
+        let rc = abi.sqlite3_step(stmtHandle)
+        case rc
+        of abi.SQLITE_ROW:
+            discard
+        of abi.SQLITE_DONE:
+            return
+        else:
+            raise newSqliteError(db)
+
 iterator iterateRows(db: DbConn, stmtOrHandle: ptr abi.sqlite3_stmt | SqlStatement,
         errorRc: var int32): ResultRow =
     let stmtHandle = when stmtOrHandle is ptr abi.sqlite3_stmt: stmtOrHandle else: stmtOrHandle.handle
-    if errorRc in SqliteRcOk:
+    if errorRc == abi.SQLITE_OK:
         var rowLen = abi.sqlite3_column_count(stmtHandle)
         var columns = newSeq[string](rowLen)
         for idx in 0 ..< rowLen:
@@ -434,41 +459,47 @@ iterator iterateNamed[T: tuple](db: DbConn,
 #
 
 proc exec*(db: DbConn, sql: string, params: varargs[DbValue, toDb]) =
-    ## Executes ``sql``, which must be a single SQL statement.
+    ## Executes ``sql``, which must be a single SQL statement. Result rows are
+    ## discarded, but the statement is stepped until it completes.
     runnableExamples:
         let db = openDatabase(":memory:")
         db.exec("CREATE TABLE Person(name, age)")
         db.exec("INSERT INTO Person(name, age) VALUES(?, ?)",
             "John Doe", 23)
-    assertCanUseDb db
-    var lease = db.acquireStmt(sql)
-    var rc: Rc = abi.SQLITE_OK
+    db.beginOperation()
+    var lease: StmtLease
     try:
-        rc = db.bindParams(lease.handle, params)
-        if rc in SqliteRcOk:
-            rc = abi.sqlite3_step(lease.handle)
+        lease = db.acquireStmt(sql)
+        let rc = db.bindParams(lease.handle, params)
+        db.checkOk(rc)
+        db.executeToCompletion(lease.handle)
     finally:
-        db.releaseStmt(lease)
-    db.checkRc(rc)
+        try:
+            db.releaseStmt(lease)
+        finally:
+            db.endOperation()
 
 proc exec*[T: tuple](db: DbConn, sql: string, params: T) =
     ## Executes ``sql`` using a named tuple whose field names correspond to
-    ## ``:name`` parameters. Tuple field order does not affect binding.
+    ## ``:name`` parameters. Tuple field order does not affect binding. Result
+    ## rows are discarded, but the statement is stepped until it completes.
     runnableExamples:
         let db = openDatabase(":memory:")
         db.exec("CREATE TABLE Person(name, age)")
         db.exec("INSERT INTO Person(name, age) VALUES(:name, :age)",
             (age: 23, name: "John Doe"))
-    assertCanUseDb db
-    var lease = db.acquireStmt(sql)
-    var rc: Rc = abi.SQLITE_OK
+    db.beginOperation()
+    var lease: StmtLease
     try:
-        rc = db.bindNamedParams(lease.handle, params)
-        if rc in SqliteRcOk:
-            rc = abi.sqlite3_step(lease.handle)
+        lease = db.acquireStmt(sql)
+        let rc = db.bindNamedParams(lease.handle, params)
+        db.checkOk(rc)
+        db.executeToCompletion(lease.handle)
     finally:
-        db.releaseStmt(lease)
-    db.checkRc(rc)
+        try:
+            db.releaseStmt(lease)
+        finally:
+            db.endOperation()
 
 template transaction*(db: DbConn, body: untyped) =
     ## Starts a transaction and runs `body` within it. At the end the transaction is committed.
@@ -520,49 +551,66 @@ proc execMany*[T: tuple](db: DbConn, sql: string, params: openArray[T]) =
 
 proc execScript*(db: DbConn, sql: string) =
     ## Executes ``sql``, which can consist of multiple SQL statements.
-    ## The statements are executed inside a transaction.
-    assertCanUseDb db
-    db.transaction:
-        var remaining = sql.cstring
-        while remaining.len > 0:
-            var tail: cstring
-            var stmtHandle: ptr abi.sqlite3_stmt
-            var rc = abi.sqlite3_prepare_v2(db.handle, remaining, -1, addr stmtHandle, addr tail)
-            db.checkRc(rc)
-            if stmtHandle.isNil:
+    ## Each statement is stepped until completion, with result rows discarded.
+    ## The statements are executed inside a transaction. Empty, semicolon-only,
+    ## and comment-only scripts are no-ops; incomplete or invalid input raises
+    ## ``SqliteError``.
+    db.beginOperation()
+    try:
+        validateCompleteSql(sql)
+        db.transaction:
+            var remaining = sql.cstring
+            while remaining[0] != '\0':
+                var tail: cstring
+                var stmtHandle: ptr abi.sqlite3_stmt
+                try:
+                    let rc = abi.sqlite3_prepare_v2(db.handle, remaining, -1,
+                        addr stmtHandle, addr tail)
+                    db.checkOk(rc)
+                    if not stmtHandle.isNil:
+                        db.executeToCompletion(stmtHandle)
+                finally:
+                    if not stmtHandle.isNil:
+                        discard abi.sqlite3_finalize(stmtHandle)
+
+                if tail.isNil or tail == remaining:
+                    raise newSqliteError("SQLite did not advance while parsing SQL input.")
                 remaining = tail
-                remaining.skipLeadingWhiteSpaceAndComments()
-                continue
-            rc = abi.sqlite3_step(stmtHandle)
-            discard abi.sqlite3_finalize(stmtHandle)
-            db.checkRc(rc)
-            remaining = tail
-            remaining.skipLeadingWhiteSpaceAndComments()
+    finally:
+        db.endOperation()
 
 iterator iterate*(db: DbConn, sql: string, params: varargs[DbValue, toDb]): ResultRow =
     ## Executes ``sql``, which must be a single SQL statement, and yields each result row one by one.
-    assertCanUseDb db
-    var lease = db.acquireStmt(sql)
+    db.beginOperation()
+    var lease: StmtLease
     var errorRc: int32 = abi.SQLITE_OK
     try:
+        lease = db.acquireStmt(sql)
         for row in db.iteratePositional(lease.handle, params, errorRc):
             yield row
     finally:
-        db.releaseStmt(lease)
-        db.checkRc(errorRc)
+        try:
+            db.releaseStmt(lease)
+        finally:
+            db.endOperation()
+        db.checkOk(errorRc)
 
 iterator iterate*[T: tuple](db: DbConn, sql: string, params: T): ResultRow =
     ## Executes ``sql`` using named ``:name`` parameters and yields each
     ## result row. Tuple field order does not affect binding.
-    assertCanUseDb db
-    var lease = db.acquireStmt(sql)
+    db.beginOperation()
+    var lease: StmtLease
     var errorRc: int32 = abi.SQLITE_OK
     try:
+        lease = db.acquireStmt(sql)
         for row in db.iterateNamed(lease.handle, params, errorRc):
             yield row
     finally:
-        db.releaseStmt(lease)
-        db.checkRc(errorRc)
+        try:
+            db.releaseStmt(lease)
+        finally:
+            db.endOperation()
+        db.checkOk(errorRc)
 
 proc all*(db: DbConn, sql: string, params: varargs[DbValue, toDb]): seq[ResultRow] =
     ## Executes ``sql``, which must be a single SQL statement, and returns all result rows.
@@ -605,11 +653,15 @@ proc close*(db: DbConn) =
     ## statement is finalized.
     ##
     ## Closing an already closed database is a harmless no-op.
+    ## Closing while a connection or explicit-statement operation is active
+    ## raises ``AssertionDefect``.
     if not db.isOpen:
         return
+    doAssert DbConnImpl(db).activeOperations == 0,
+        "Database cannot be closed while an operation is active"
     db.cache.clear()
     let rc = abi.sqlite3_close_v2(db.handle)
-    db.checkRc(rc)
+    db.checkOk(rc)
     DbConnImpl(db).handle = nil
 
 proc lastInsertRowId*(db: DbConn): int64 =
@@ -677,34 +729,41 @@ proc stmt*(db: DbConn, sql: string): SqlStatement =
     ## Constructs a prepared statement from `sql`. The returned statement owns
     ## its SQLite handle and must be finalized independently, including when the
     ## database connection is closed first.
-    assertCanUseDb db
-    let handle = prepareSql(db, sql)
-    SqlStatementImpl(handle: handle, db: db).SqlStatement
+    db.beginOperation()
+    try:
+        let handle = prepareSql(db, sql)
+        result = SqlStatementImpl(handle: handle, db: db).SqlStatement
+    finally:
+        db.endOperation()
     
 proc exec*(statement: SqlStatement, params: varargs[DbValue, toDb]) =
-    ## Executes `statement` with `params` as parameters.
-    assertCanUseStatement statement
-    var rc = statement.db.bindParams(statement.handle, params)
-    if rc notin SqliteRcOk:
-        resetStmt(statement.handle)
-        statement.db.checkRc(rc)
-    else:
-        rc = abi.sqlite3_step(statement.handle)
-        resetStmt(statement.handle)
-        statement.db.checkRc(rc)
+    ## Executes `statement` with `params` as parameters. Result rows are
+    ## discarded, but the statement is stepped until it completes.
+    statement.beginOperation()
+    try:
+        let rc = statement.db.bindParams(statement.handle, params)
+        statement.db.checkOk(rc)
+        statement.db.executeToCompletion(statement.handle)
+    finally:
+        try:
+            resetStmt(statement.handle)
+        finally:
+            statement.endOperation()
 
 proc exec*[T: tuple](statement: SqlStatement, params: T) =
     ## Executes `statement` using named ``:name`` parameters. Tuple field
-    ## order does not affect binding.
-    assertCanUseStatement statement
-    var rc: Rc = abi.SQLITE_OK
+    ## order does not affect binding. Result rows are discarded, but the
+    ## statement is stepped until it completes.
+    statement.beginOperation()
     try:
-        rc = statement.db.bindNamedParams(statement.handle, params)
-        if rc in SqliteRcOk:
-            rc = abi.sqlite3_step(statement.handle)
+        let rc = statement.db.bindNamedParams(statement.handle, params)
+        statement.db.checkOk(rc)
+        statement.db.executeToCompletion(statement.handle)
     finally:
-        resetStmt(statement.handle)
-    statement.db.checkRc(rc)
+        try:
+            resetStmt(statement.handle)
+        finally:
+            statement.endOperation()
 
 proc execMany*(statement: SqlStatement, params: seq[seq[DbValue]]) =
     ## Executes ``statement`` repeatedly using each element of ``params`` as parameters.
@@ -723,29 +782,31 @@ proc execMany*[T: tuple](statement: SqlStatement, params: openArray[T]) =
 
 iterator iterate*(statement: SqlStatement, params: varargs[DbValue, toDb]): ResultRow =
     ## Executes ``statement`` and yields each result row one by one.
-    assertCanUseStatement statement
+    statement.beginOperation()
     var errorRc: int32
     try:
         for row in statement.db.iteratePositional(statement, params, errorRc):
             yield row
     finally:
-        # The database might have been closed while iterating, in which
-        # case we don't need to clean up the statement.
-        if statement.isAlive:
+        try:
             resetStmt(statement.handle)
-        statement.db.checkRc errorRc
+        finally:
+            statement.endOperation()
+        statement.db.checkOk errorRc
 
 iterator iterate*[T: tuple](statement: SqlStatement, params: T): ResultRow =
     ## Executes `statement` using named ``:name`` parameters and yields each row.
-    assertCanUseStatement statement
+    statement.beginOperation()
     var errorRc: int32
     try:
         for row in statement.db.iterateNamed(statement, params, errorRc):
             yield row
     finally:
-        if statement.isAlive:
+        try:
             resetStmt(statement.handle)
-        statement.db.checkRc errorRc
+        finally:
+            statement.endOperation()
+        statement.db.checkOk errorRc
 
 proc all*(statement: SqlStatement, params: varargs[DbValue, toDb]): seq[ResultRow] =
     ## Executes ``statement`` and returns all result rows.
@@ -793,8 +854,11 @@ proc finalize*(statement: SqlStatement): void =
     ## called once the statement is no longer used, including if its database
     ## connection has already been closed. Finalizing an already finalized
     ## statement is a harmless no-op.
+    ## Finalizing while the statement is active raises ``AssertionDefect``.
     if SqlStatementImpl(statement).isNil or statement.handle.isNil:
         return
+    doAssert not SqlStatementImpl(statement).inUse,
+        "Statement cannot be finalized while an operation is active"
     discard abi.sqlite3_finalize(statement.handle)
     SqlStatementImpl(statement).handle = nil
 
@@ -832,10 +896,10 @@ proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): 
         case mode
         of dbReadWrite:
             let rc = abi.sqlite3_open(path, addr db.handle)
-            result.checkRc(rc)
+            result.checkOk(rc)
         of dbRead:
             let rc = abi.sqlite3_open_v2(path, addr db.handle, abi.SQLITE_OPEN_READONLY, nil)
-            result.checkRc(rc)
+            result.checkOk(rc)
         result.exec("PRAGMA encoding = 'UTF-8'")
         result.exec("PRAGMA foreign_keys = ON")
         initialized = true
@@ -851,7 +915,7 @@ proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): 
 proc loadExtension*(db: DbConn, path: string) =
     ## Load an SQLite extension. Will raise a ``SqliteError`` exception if loading fails.
     assertCanUseDb db
-    db.checkRc abi.sqlite3_db_config(db.handle, abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, 0);
+    db.checkOk abi.sqlite3_db_config(db.handle, abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, 0);
     var err: cstring
     if abi.SQLITE_ERROR == abi.sqlite3_load_extension(db.handle, path.cstring, nil, addr err):
       if err == nil:
