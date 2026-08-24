@@ -135,7 +135,13 @@ proc resetStmt(stmtHandle: ptr abi.sqlite3_stmt) =
 
 proc toDb*[T: Ordinal](val: T): DbValue =
     ## Convert an ordinal value to a DbValue.
-    DbValue(kind: sqliteInteger, intVal: val.int64)
+    ## Raises ``SqliteError`` if ``val`` cannot be represented by SQLite's
+    ## signed 64-bit ``INTEGER`` storage class.
+    when T is SomeUnsignedInt:
+        if uint64(val) > uint64(high(int64)):
+            raise newSqliteError("Integer value " & $val &
+                " is out of range for SQLite INTEGER.")
+    DbValue(kind: sqliteInteger, intVal: int64(val))
 
 proc toDb*[T: SomeFloat](val: T): DbValue =
     ## Convert a float to a DbValue.
@@ -167,15 +173,24 @@ proc requireKind(value: DbValue, expected: DbValueKind, target: string) =
 
 proc fromDb*(value: DbValue, T: typedesc[Ordinal]): T =
     ## Convert a DbValue to an ordinal.
-    ## Raises ``SqliteError`` unless ``value`` has the ``sqliteInteger`` kind.
+    ## Raises ``SqliteError`` unless ``value`` has the ``sqliteInteger`` kind
+    ## and its value is representable by ``T``.
     value.requireKind(sqliteInteger, $T)
-    value.intVal.T
+    when T is SomeUnsignedInt:
+        if value.intVal < 0 or uint64(value.intVal) > uint64(high(T)):
+            raise newSqliteError("SQLite INTEGER value " & $value.intVal &
+                " is out of range for " & $T & ".")
+    else:
+        if value.intVal < int64(low(T)) or value.intVal > int64(high(T)):
+            raise newSqliteError("SQLite INTEGER value " & $value.intVal &
+                " is out of range for " & $T & ".")
+    T(value.intVal)
 
-proc fromDb*(value: DbValue, T: typedesc[SomeFloat]): float64 =
-    ## Convert a DbValue to a float.
+proc fromDb*[T: SomeFloat](value: DbValue, _: typedesc[T]): T =
+    ## Convert a DbValue to the requested floating-point type.
     ## Raises ``SqliteError`` unless ``value`` has the ``sqliteReal`` kind.
     value.requireKind(sqliteReal, $T)
-    value.floatVal
+    T(value.floatVal)
 
 proc fromDb*(value: DbValue, T: typedesc[string]): string =
     ## Convert a DbValue to a string.
@@ -240,17 +255,23 @@ proc `==`*(a, b: DbValue): bool =
 proc bindValue(stmtHandle: ptr abi.sqlite3_stmt, idx: int32, value: DbValue): Rc =
     case value.kind
     of sqliteNull:
-        abi.sqlite3_bind_null(stmtHandle, idx)
+        result = abi.sqlite3_bind_null(stmtHandle, idx)
     of sqliteInteger:
-        abi.sqlite3_bind_int64(stmtHandle, idx, value.intval)
+        result = abi.sqlite3_bind_int64(stmtHandle, idx, value.intval)
     of sqliteReal:
-        abi.sqlite3_bind_double(stmtHandle, idx, value.floatVal)
+        result = abi.sqlite3_bind_double(stmtHandle, idx, value.floatVal)
     of sqliteText:
-        abi.sqlite3_bind_text(stmtHandle, idx, value.strVal.cstring, value.strVal.len.int32,
-            abi.SQLITE_TRANSIENT)
+        {.push warning[Deprecated]: off.}
+        result = abi.sqlite3_bind_text64(stmtHandle, idx, value.strVal.cstring,
+            uint64(value.strVal.len), abi.SQLITE_TRANSIENT, abi.SQLITE_UTF8.cuchar)
+        {.pop.}
     of sqliteBlob:
-        abi.sqlite3_bind_blob(stmtHandle, idx, cast[string](value.blobVal).cstring,
-            value.blobVal.len.int32, abi.SQLITE_TRANSIENT)
+        if value.blobVal.len == 0:
+            result = abi.sqlite3_bind_zeroblob64(stmtHandle, idx, 0)
+        else:
+            result = abi.sqlite3_bind_blob64(stmtHandle, idx,
+                unsafeAddr value.blobVal[0], uint64(value.blobVal.len),
+                abi.SQLITE_TRANSIENT)
 
 proc bindParams(db: DbConn, stmtHandle: ptr abi.sqlite3_stmt, params: varargs[DbValue]): Rc =
     result = abi.SQLITE_OK
@@ -303,7 +324,13 @@ proc bindNamedParams[T: tuple](db: DbConn, stmtHandle: ptr abi.sqlite3_stmt,
             raise newSqliteError("No value was provided for named parameter '" &
                 $parameterName & "'.")
 
+proc rejectEmbeddedNul(value, subject: string) =
+    for character in value:
+        if character == '\0':
+            raise newSqliteError(subject & " contains an embedded NUL byte.")
+
 proc validateCompleteSql(sql: string) =
+    rejectEmbeddedNul(sql, "SQL input")
     # sqlite3_complete expects a terminating semicolon. Add one after a
     # newline so a valid final `--` comment cannot consume it. This catches
     # unterminated block comments and quoted tokens before preparation can
@@ -336,9 +363,11 @@ proc prepareSql(db: DbConn, sql: string): ptr abi.sqlite3_stmt =
     var tail: cstring
     try:
         validateCompleteSql(sql)
-        let rc = abi.sqlite3_prepare_v2(db.handle, sql.cstring, sql.len.cint + 1,
+        let rc = abi.sqlite3_prepare_v2(db.handle, sql.cstring, -1,
             addr stmtHandle, addr tail)
         db.checkOk(rc)
+        if stmtHandle.isNil:
+            raise newSqliteError("SQL input contains no statement.")
         if db.containsSqlStatement(tail):
             raise newSqliteError(
                 "Only a single SQL statement is allowed in this context. " &
@@ -387,16 +416,22 @@ proc readColumn(stmtHandle: ptr abi.sqlite3_stmt, col: int32): DbValue =
     of abi.SQLITE_TEXT:
         let text = abi.sqlite3_column_text(stmtHandle, col)
         let bytes = abi.sqlite3_column_bytes(stmtHandle, col)
-        var s = newString(bytes)
+        if bytes < 0:
+            raise newSqliteError("SQLite returned an invalid negative TEXT byte count.")
+        let length = int(bytes)
+        var s = newString(length)
         if bytes != 0:
-            copyMem(addr(s[0]), text, bytes)
+            copyMem(addr(s[0]), text, length)
         result = toDb(s)
     of abi.SQLITE_BLOB:
         let blob = abi.sqlite3_column_blob(stmtHandle, col)
         let bytes = abi.sqlite3_column_bytes(stmtHandle, col)
-        var s = newSeq[byte](bytes)
+        if bytes < 0:
+            raise newSqliteError("SQLite returned an invalid negative BLOB byte count.")
+        let length = int(bytes)
+        var s = newSeq[byte](length)
         if bytes != 0:
-            copyMem(addr(s[0]), blob, bytes)
+            copyMem(addr(s[0]), blob, length)
         result = toDb(s)
     of abi.SQLITE_NULL:
         result = toDb(nil)
@@ -461,6 +496,8 @@ iterator iterateNamed[T: tuple](db: DbConn,
 proc exec*(db: DbConn, sql: string, params: varargs[DbValue, toDb]) =
     ## Executes ``sql``, which must be a single SQL statement. Result rows are
     ## discarded, but the statement is stepped until it completes.
+    ## Input without a statement or containing an embedded NUL byte raises
+    ## ``SqliteError``.
     runnableExamples:
         let db = openDatabase(":memory:")
         db.exec("CREATE TABLE Person(name, age)")
@@ -483,6 +520,8 @@ proc exec*[T: tuple](db: DbConn, sql: string, params: T) =
     ## Executes ``sql`` using a named tuple whose field names correspond to
     ## ``:name`` parameters. Tuple field order does not affect binding. Result
     ## rows are discarded, but the statement is stepped until it completes.
+    ## Input without a statement or containing an embedded NUL byte raises
+    ## ``SqliteError``.
     runnableExamples:
         let db = openDatabase(":memory:")
         db.exec("CREATE TABLE Person(name, age)")
@@ -554,7 +593,7 @@ proc execScript*(db: DbConn, sql: string) =
     ## Each statement is stepped until completion, with result rows discarded.
     ## The statements are executed inside a transaction. Empty, semicolon-only,
     ## and comment-only scripts are no-ops; incomplete or invalid input raises
-    ## ``SqliteError``.
+    ## ``SqliteError``. Embedded NUL bytes also raise ``SqliteError``.
     db.beginOperation()
     try:
         validateCompleteSql(sql)
@@ -581,6 +620,8 @@ proc execScript*(db: DbConn, sql: string) =
 
 iterator iterate*(db: DbConn, sql: string, params: varargs[DbValue, toDb]): ResultRow =
     ## Executes ``sql``, which must be a single SQL statement, and yields each result row one by one.
+    ## Input without a statement or containing an embedded NUL byte raises
+    ## ``SqliteError``.
     db.beginOperation()
     var lease: StmtLease
     var errorRc: int32 = abi.SQLITE_OK
@@ -598,6 +639,8 @@ iterator iterate*(db: DbConn, sql: string, params: varargs[DbValue, toDb]): Resu
 iterator iterate*[T: tuple](db: DbConn, sql: string, params: T): ResultRow =
     ## Executes ``sql`` using named ``:name`` parameters and yields each
     ## result row. Tuple field order does not affect binding.
+    ## Input without a statement or containing an embedded NUL byte raises
+    ## ``SqliteError``.
     db.beginOperation()
     var lease: StmtLease
     var errorRc: int32 = abi.SQLITE_OK
@@ -674,14 +717,14 @@ proc lastInsertRowId*(db: DbConn): int64 =
     assertCanUseDb db
     abi.sqlite3_last_insert_rowid(db.handle)
 
-proc changes*(db: DbConn): int32 =
+proc changes*(db: DbConn): int64 =
     ## Get the number of changes triggered by the most recent INSERT, UPDATE or
-    ## DELETE statement.
+    ## DELETE statement as a signed 64-bit value.
     ##
     ## For more information, refer to the SQLite documentation
     ## (https://www.sqlite.org/c3ref/changes.html).
     assertCanUseDb db
-    abi.sqlite3_changes(db.handle)
+    abi.sqlite3_changes64(db.handle)
 
 proc isReadonly*(db: DbConn): bool =
     ## Returns true if ``db`` is in readonly mode.
@@ -729,6 +772,8 @@ proc stmt*(db: DbConn, sql: string): SqlStatement =
     ## Constructs a prepared statement from `sql`. The returned statement owns
     ## its SQLite handle and must be finalized independently, including when the
     ## database connection is closed first.
+    ## Input without a statement or containing an embedded NUL byte raises
+    ## ``SqliteError``.
     db.beginOperation()
     try:
         let handle = prepareSql(db, sql)
@@ -875,6 +920,7 @@ proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): 
     ## If the database doesn't already exist and ``mode`` is ``dbReadWrite``,
     ## the database will be created. If the database doesn't exist and ``mode``
     ## is ``dbRead``, a ``SqliteError`` exception will be raised.
+    ## Paths containing embedded NUL bytes also raise ``SqliteError``.
     ##
     ## NOTE: To avoid memory leaks, ``db.close`` must be called when the
     ## database connection is no longer needed.
@@ -885,6 +931,7 @@ proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): 
     ## operation. Leased and busy statements are not evicted from the cache.
     runnableExamples:
         let memDb = openDatabase(":memory:")
+    rejectEmbeddedNul(path, "Database path")
     var handle: ptr abi.sqlite3
     let db = new DbConnImpl
     db.handle = handle
@@ -915,6 +962,7 @@ proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): 
 proc loadExtension*(db: DbConn, path: string) =
     ## Load an SQLite extension. Will raise a ``SqliteError`` exception if loading fails.
     assertCanUseDb db
+    rejectEmbeddedNul(path, "Extension path")
     db.checkOk abi.sqlite3_db_config(db.handle, abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, 0);
     var err: cstring
     if abi.SQLITE_ERROR == abi.sqlite3_load_extension(db.handle, path.cstring, nil, addr err):

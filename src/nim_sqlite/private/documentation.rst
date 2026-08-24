@@ -11,7 +11,8 @@ be created by using the special path `":memory:"` as an argument. Once the datab
 `close <#close,DbConn>`_ must be called to prevent memory leaks. Closing a connection finalizes its internally cached
 statements. Explicit statements created with ``stmt`` own their handles and must be finalized separately. Closing is
 rejected with ``AssertionDefect`` while a connection operation is active, preventing callbacks and user-defined
-conversions from invalidating a statement that is being bound or executed.
+conversions from invalidating a statement that is being bound or executed. Database and extension paths containing
+embedded NUL bytes raise ``SqliteError`` before they are passed to SQLite.
 
 .. code-block:: nim
 
@@ -26,10 +27,12 @@ The `exec <#exec,DbConn,string,varargs[DbValue,toDb]>`_ procedure can be used to
 The `execScript <#execScript,DbConn,string>`_ procedure is used to execute several statements, but it doesn't support
 parameter substitution. Single-statement operations parse the complete input before executing: trailing whitespace,
 extra semicolons, and SQLite comments do not count as another statement, while a second statement, invalid trailing
-SQL, or incomplete input raises ``SqliteError`` before the first statement executes. Empty, semicolon-only, and
-comment-only scripts are no-ops. If a statement produces rows, ``exec`` and ``execScript`` discard them but continue
-stepping until the statement completes. A runtime error on any row raises ``SqliteError``. When ``execScript`` starts
-its transaction, such an error rolls back the script.
+SQL, or incomplete input raises ``SqliteError`` before the first statement executes. Single-statement operations also
+raise ``SqliteError`` for empty, whitespace-only, semicolon-only, or comment-only input. ``execScript`` retains its
+no-op behavior for those inputs. All SQL operations reject embedded NUL bytes instead of allowing SQLite to truncate
+the input at the first NUL. If a statement produces rows, ``exec`` and ``execScript`` discard them but continue stepping
+until the statement completes. A runtime error on any row raises ``SqliteError``. When ``execScript`` starts its
+transaction, such an error rolls back the script.
 
 .. code-block:: nim
 
@@ -220,6 +223,14 @@ Nim type              SQLite type
 ``seq[byte]``         | ``BLOB``
 ``Option[T]``         | ``NULL`` if value is ``none(T)``, otherwise the type that ``T`` would use
 ====================  =================================================================================
+
+Embedded NUL bytes remain valid in bound ``string`` (``TEXT``) and ``seq[byte]`` (``BLOB``) values; the SQL-input
+restriction does not apply to bound values.
+
+SQLite ``INTEGER`` values are signed 64-bit integers. Binding an unsigned ordinal above ``high(int64)``, or decoding
+an integer into a narrower integer, range, boolean, character, or enum that cannot represent it, raises
+``SqliteError`` instead of wrapping or depending on compiler range checks. Floating-point decoding returns the
+requested Nim floating-point type.
 
 This can be extended by implementing `toDb` and `fromDb` for other types. Below is an example
 how support for `times.Time` can be added:
