@@ -789,15 +789,18 @@ test "stmt.exec runs row-producing statements to completion":
 test "stmt.iterate busy":
     withDb:
         let stmt = db.stmt(SelectPersons)
-        for row in stmt.iterate():
-            expectPreparedCountUnchanged(db, AssertionDefect):
-                discard stmt.all()
-            expectPreparedCountUnchanged(db, AssertionDefect):
-                discard stmt.one()
-            expectPreparedCountUnchanged(db, AssertionDefect):
-                discard stmt.value()
-            expectPreparedCountUnchanged(db, AssertionDefect):
-                stmt.exec()
+        try:
+            for row in stmt.iterate():
+                expectPreparedCountUnchanged(db, AssertionDefect):
+                    discard stmt.all()
+                expectPreparedCountUnchanged(db, AssertionDefect):
+                    discard stmt.one()
+                expectPreparedCountUnchanged(db, AssertionDefect):
+                    discard stmt.value()
+                expectPreparedCountUnchanged(db, AssertionDefect):
+                    stmt.exec()
+        finally:
+            stmt.finalize()
 
 test "stmt.iterate close/finalize":
     withDb:
@@ -808,9 +811,12 @@ test "stmt.iterate close/finalize":
         stmt.finalize()
     withDb:
         let stmt = db.stmt(SelectPersons)
-        expectPreparedCountUnchanged(db, AssertionDefect):
-            for row in stmt.iterate():
-                stmt.finalize()
+        try:
+            expectPreparedCountUnchanged(db, AssertionDefect):
+                for row in stmt.iterate():
+                    stmt.finalize()
+        finally:
+            stmt.finalize()
 
 test "stmt lifecycle changes are rejected during named parameter conversion":
     withDb:
