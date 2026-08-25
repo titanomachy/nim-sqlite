@@ -8,7 +8,7 @@ coverage.info
 coverage_html/
 docs/coverage.svg
 REVIEWS/
-PLANS/
+PLANS/*
 
 # Prevent an accidental database file from breaking Windows checkouts.
 /:memory

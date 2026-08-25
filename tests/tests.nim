@@ -1,10 +1,43 @@
-import std / [unittest, options, sequtils, times]
+import std / [unittest, options, sequtils, strutils, times]
 import nim_sqlite
 from nim_sqlite / sqlite3_abi as abi import nil
 
 const SelectPersons = "SELECT name, age FROM Person"
 const SelectJohnDoe = "SELECT name, age FROM Person WHERE name = 'John Doe'"
+const LateRowErrorPositional = """
+    WITH RECURSIVE Input(value) AS (
+        VALUES(1)
+        UNION ALL
+        SELECT value + 1 FROM Input WHERE value < 2
+    )
+    SELECT CASE
+        WHEN value = 2 AND ? THEN abs(-9223372036854775808)
+        ELSE value
+    END
+    FROM Input
+"""
+const LateRowErrorNamed = LateRowErrorPositional.replace("?", ":fail")
+const NoSqlErrorMessage = "SQL input contains no statement."
+const EmbeddedNulSqlErrorMessage = "SQL input contains an embedded NUL byte."
 type SelectPersonsRowType = tuple[name: string, age: Option[int]]
+
+type
+    SmallIntegerRange = range[-2 .. 2]
+    WideUnsignedRange = range[0'u64 .. high(uint64)]
+    TestEnum = enum
+        enumZero,
+        enumOne,
+        enumTwo
+
+template expectSqliteErrorMessage(expectedMessage: string, body: untyped) =
+    block:
+        var raised = false
+        try:
+            body
+        except SqliteError as error:
+            raised = true
+            check error.msg == expectedMessage
+        check raised
 
 proc writePersons(db: DbConn) {.used.} =
     for row in db.all(SelectPersons):
@@ -17,12 +50,44 @@ proc preparedStatementCount(db: DbConn): int =
         result.inc
         statement = abi.sqlite3_next_stmt(db.unsafeHandle, statement)
 
+template expectPreparedCountUnchanged(db: DbConn, exceptionType: typedesc,
+        body: untyped) =
+    block:
+        let preparedCountBefore = db.preparedStatementCount
+        expect exceptionType:
+            body
+        check db.preparedStatementCount == preparedCountBefore
+
 type ReentrantParam = object
     db: DbConn
 
 proc toDb(value: ReentrantParam): DbValue =
     discard value.db.one("SELECT :first, :second", (first: 100, second: 200))
     toDb(22)
+
+type ClosingParam = object
+    db: DbConn
+
+proc toDb(value: ClosingParam): DbValue =
+    value.db.close()
+    toDb(23)
+
+type
+    StatementLifecycleAction = enum
+        finalizeStatement,
+        reuseStatement
+
+    StatementLifecycleParam = object
+        statement: SqlStatement
+        action: StatementLifecycleAction
+
+proc toDb(value: StatementLifecycleParam): DbValue =
+    case value.action
+    of finalizeStatement:
+        value.statement.finalize()
+    of reuseStatement:
+        discard value.statement.value((value: toDb(24),))
+    toDb(25)
 
 const seedScript = staticRead("./seed_test_db.sql")
 
@@ -95,6 +160,21 @@ test "db statement lease begins before named parameter conversion":
         check row[1].intVal == 22
         check db.preparedStatementCount == statementsBefore + 1
 
+test "db close is rejected during named parameter conversion":
+    for cacheSize in [0, 1]:
+        let db = openDatabase(":memory:", cacheSize = cacheSize)
+        try:
+            check db.value("SELECT :value", (value: toDb(26),)).get.intVal == 26
+            let statementsBefore = db.preparedStatementCount
+            expectPreparedCountUnchanged(db, AssertionDefect):
+                discard db.value("SELECT :value", (value: ClosingParam(db: db),))
+
+            check db.isOpen
+            check db.value("SELECT :value", (value: toDb(26),)).get.intVal == 26
+            check db.preparedStatementCount == statementsBefore
+        finally:
+            db.close()
+
 test "db cache does not evict a busy statement":
     let db = openDatabase(":memory:", cacheSize = 1)
     try:
@@ -113,7 +193,10 @@ test "db cache does not evict a busy statement":
 
 test "db.iterate close":
     withDb:
-        expect AssertionDefect:
+        # Warm the cache so the failure must return the existing statement
+        # lease rather than legitimately adding its first cached handle.
+        discard db.all(SelectPersons)
+        expectPreparedCountUnchanged(db, AssertionDefect):
             for row in db.iterate(SelectPersons):
                 db.close()
 
@@ -132,7 +215,7 @@ test "db.value no rows":
     withDb:
         check db.value("SELECT * FROM Person Where age = 0") == none(DbValue)
 
-test "TEXT values preserve NUL bytes":
+test "bound TEXT and BLOB values preserve NUL bytes":
     withDb:
         for expected in ["a\0b", "\0", "\0a", "a\0", ""]:
             let actual = db.value("SELECT ?", expected).get
@@ -145,6 +228,82 @@ test "TEXT values preserve NUL bytes":
         check generated.strVal == "a\0b"
         check generated.strVal.len == 3
 
+        for expected in [
+            newSeq[byte](),
+            @[0x61'u8, 0x00'u8, 0x62'u8],
+            @[0x00'u8],
+            @[0x00'u8, 0x61'u8],
+            @[0x61'u8, 0x00'u8]
+        ]:
+            let actual = db.value("SELECT ?", expected).get
+            check actual.kind == sqliteBlob
+            check actual.blobVal == expected
+            check actual.blobVal.len == expected.len
+
+test "single-statement operations reject input without SQL":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        for sql in [
+            "",
+            "   \n\t",
+            ";;;",
+            "-- line comment",
+            "/* block comment */",
+            "; -- comments and empty statements\n; /* only */ ;"
+        ]:
+            let statementsBefore = db.preparedStatementCount
+
+            expectSqliteErrorMessage NoSqlErrorMessage:
+                db.exec(sql)
+            expectSqliteErrorMessage NoSqlErrorMessage:
+                db.exec(sql, (unused: 1,))
+            expectSqliteErrorMessage NoSqlErrorMessage:
+                discard db.all(sql)
+            expectSqliteErrorMessage NoSqlErrorMessage:
+                discard db.one(sql)
+            expectSqliteErrorMessage NoSqlErrorMessage:
+                discard db.value(sql)
+            expectSqliteErrorMessage NoSqlErrorMessage:
+                discard db.value(sql, (unused: 1,))
+            expectSqliteErrorMessage NoSqlErrorMessage:
+                for _ in db.iterate(sql):
+                    discard
+            expectSqliteErrorMessage NoSqlErrorMessage:
+                let statement = db.stmt(sql)
+                statement.finalize()
+
+            check db.preparedStatementCount == statementsBefore
+
+        # A validation failure must not leave the operation guard active.
+        check db.value("SELECT 1").get.intVal == 1
+    finally:
+        db.close()
+
+test "SQL operations reject embedded NUL bytes":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        db.exec("CREATE TABLE ExecutionLog(value INTEGER)")
+        let statementsBefore = db.preparedStatementCount
+
+        for sql in ["\0SELECT 1", "SELECT 1\0", "SELECT 1\0; SELECT 2"]:
+            expectSqliteErrorMessage EmbeddedNulSqlErrorMessage:
+                db.exec(sql)
+
+        expectSqliteErrorMessage EmbeddedNulSqlErrorMessage:
+            discard db.value("SELECT 1\0; SELECT 2")
+        expectSqliteErrorMessage EmbeddedNulSqlErrorMessage:
+            discard db.value("SELECT :value\0; SELECT 2", (value: 1,))
+        expectSqliteErrorMessage EmbeddedNulSqlErrorMessage:
+            let statement = db.stmt("SELECT 1\0; SELECT 2")
+            statement.finalize()
+        expectSqliteErrorMessage EmbeddedNulSqlErrorMessage:
+            db.execScript("INSERT INTO ExecutionLog VALUES(1);\0 SELECT 1")
+
+        check db.value("SELECT COUNT(*) FROM ExecutionLog").get.intVal == 0
+        check db.preparedStatementCount == statementsBefore
+    finally:
+        db.close()
+
 test "db.exec":
     withDb:
         db.exec("""
@@ -156,6 +315,23 @@ test "db.exec":
         check rows.len == 3
         db.exec("DELETE FROM Person WHERE name = ?", "John Persson")
         check db.all(SelectPersons).len == 2
+
+test "db.exec runs row-producing statements to completion":
+    withDb:
+        check db.one(LateRowErrorNamed, (fail: 1,)).get[0].intVal == 1
+        let statementsAfterFirstRow = db.preparedStatementCount
+
+        expectPreparedCountUnchanged(db, SqliteError):
+            db.exec(LateRowErrorNamed, (fail: 1,))
+        check db.preparedStatementCount == statementsAfterFirstRow
+
+        db.exec(LateRowErrorNamed, (fail: 0,))
+        check db.preparedStatementCount == statementsAfterFirstRow
+
+        db.exec(LateRowErrorPositional, 0)
+        expectPreparedCountUnchanged(db, SqliteError):
+            db.exec(LateRowErrorPositional, 1)
+        db.exec(LateRowErrorPositional, 0)
 
 test "db named parameters":
     withDb:
@@ -181,13 +357,16 @@ test "db named parameters":
             "converted"
 
         let cachedSql = "SELECT :first || :second"
-        expect SqliteError:
+        check db.value(cachedSql, (second: "b", first: "a")).get.strVal == "ab"
+        expectPreparedCountUnchanged(db, SqliteError):
             discard db.value(cachedSql, (first: "a",))
         check db.value(cachedSql, (second: "b", first: "a")).get.strVal == "ab"
 
-        expect SqliteError:
+        check db.value("SELECT :known", (known: "value",)).get.strVal == "value"
+        expectPreparedCountUnchanged(db, SqliteError):
             discard db.value("SELECT :known", (unknown: "value",))
-        expect SqliteError:
+        check db.value("SELECT ?", "value").get.strVal == "value"
+        expectPreparedCountUnchanged(db, SqliteError):
             discard db.value("SELECT ?", (value: "value",))
 
 test "db.exec trailing comment":
@@ -206,21 +385,51 @@ test "db.exec trailing comment":
         db.exec("DELETE FROM Person WHERE name = ?", "John Persson")
         check db.all(SelectPersons).len == 2
 
+test "db.exec accepts generated non-SQL tails":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        const tailParts = [
+            "",
+            " ",
+            "\t\r\n\f",
+            ";",
+            ";;",
+            "-- trailing comment",
+            "-- trailing comment\n",
+            "/* trailing comment */"
+        ]
+
+        # Exercise combinations rather than teaching the wrapper its own SQL
+        # comment grammar. SQLite must identify every generated tail as
+        # containing no further statement.
+        for first in tailParts:
+            for second in tailParts:
+                for third in tailParts:
+                    db.exec("SELECT 1;" & first & second & third)
+                    check db.preparedStatementCount == 0
+    finally:
+        db.close()
+
 test "db.exec trailing syntax error":
-    withDb:
-        expect SqliteError:
-            db.exec("""
-                INSERT INTO Person(name, age)
-                VALUES(?, ?);
-                /*
-                comment
-                *
-            """, "John Persson", 103)
-        check db.all(SelectPersons).len == 2
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        db.exec("CREATE TABLE ExecutionLog(value INTEGER)")
+        for invalidTail in [
+            "/*",
+            "/* unterminated",
+            "SELECT FROM",
+            "'unterminated string"
+        ]:
+            expect SqliteError:
+                db.exec("INSERT INTO ExecutionLog VALUES(1);" & invalidTail)
+            check db.value("SELECT COUNT(*) FROM ExecutionLog").get.intVal == 0
+            check db.preparedStatementCount == 0
+    finally:
+        db.close()
 
 test "db.exec with multiple SQL statements":
     withDb:
-        expect SqliteError:
+        expectPreparedCountUnchanged(db, SqliteError):
             db.exec("""
                 DELETE FROM Person;
                 DELETE FROM Person;
@@ -302,6 +511,18 @@ test "db.execScript ignores scripts without statements":
             db.execScript(script)
         check db.all(SelectPersons).len == 2
 
+test "db.execScript rejects invalid trailing SQL":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        db.exec("CREATE TABLE ExecutionLog(value INTEGER)")
+        for invalidTail in ["/*", "SELECT FROM"]:
+            expect SqliteError:
+                db.execScript("INSERT INTO ExecutionLog VALUES(1);" & invalidTail)
+            check db.value("SELECT COUNT(*) FROM ExecutionLog").get.intVal == 0
+            check db.preparedStatementCount == 0
+    finally:
+        db.close()
+
 test "db.execScript in transaction":
     withDb:
         db.transaction:
@@ -327,6 +548,33 @@ test "db.execScript with failure":
             """)
         let rows = db.all(SelectPersons)
         check rows.len == 2
+
+test "db.execScript reports errors after the first result row":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        db.exec("CREATE TABLE ExecutionLog(value INTEGER)")
+        expect SqliteError:
+            db.execScript("""
+                INSERT INTO ExecutionLog(value) VALUES(1);
+                WITH RECURSIVE Input(value) AS (
+                    VALUES(1)
+                    UNION ALL
+                    SELECT value + 1 FROM Input WHERE value < 2
+                )
+                SELECT CASE
+                    WHEN value = 2 THEN abs(-9223372036854775808)
+                    ELSE value
+                END
+                FROM Input;
+                INSERT INTO ExecutionLog(value) VALUES(2);
+            """)
+
+        check db.preparedStatementCount == 0
+        check db.value("SELECT COUNT(*) FROM ExecutionLog").get.intVal == 0
+        db.exec("INSERT INTO ExecutionLog(value) VALUES(3)")
+        check db.value("SELECT value FROM ExecutionLog").get.intVal == 3
+    finally:
+        db.close()
 
 test "db.transaction with return":
     withDb:
@@ -453,6 +701,8 @@ when not defined(macosx):
         withDb:
             expect SqliteError:
                 db.loadExtension("invalid extension path")
+            expectSqliteErrorMessage "Extension path contains an embedded NUL byte.":
+                db.loadExtension("invalid\0extension path")
 
 test "db.loadExtension on closed connection":
     let db = openDatabase(":memory:")
@@ -481,7 +731,7 @@ test "stmt.all":
 
     withDb:
         let stmt = db.stmt("SELECT name, age FROM Person WHERE name = ?")
-        expect SqliteError:
+        expectPreparedCountUnchanged(db, SqliteError):
             discard stmt.all()
         var rows = stmt.all("John Doe")
         check rows.len == 1
@@ -512,36 +762,77 @@ test "stmt named parameters":
             WHERE name = :name
         """)
         check selectStmt.value((name: "Prepared One",)).get.intVal == 31
-        expect SqliteError:
+        expectPreparedCountUnchanged(db, SqliteError):
             discard selectStmt.value((unknown: "Prepared One",))
         check selectStmt.value((name: "Prepared Two",)).get.intVal == 32
         selectStmt.finalize()
+
+test "stmt.exec runs row-producing statements to completion":
+    withDb:
+        let stmt = db.stmt(LateRowErrorNamed)
+        try:
+            check stmt.one((fail: 1,)).get[0].intVal == 1
+
+            expectPreparedCountUnchanged(db, SqliteError):
+                stmt.exec((fail: 1,))
+            check stmt.isAlive
+
+            stmt.exec((fail: 0,))
+            check stmt.isAlive
+
+            expectPreparedCountUnchanged(db, SqliteError):
+                stmt.exec((fail: 1,))
+            check stmt.isAlive
+        finally:
+            stmt.finalize()
 
 test "stmt.iterate busy":
     withDb:
         let stmt = db.stmt(SelectPersons)
         for row in stmt.iterate():
-            expect AssertionDefect:
+            expectPreparedCountUnchanged(db, AssertionDefect):
                 discard stmt.all()
-            expect AssertionDefect:
+            expectPreparedCountUnchanged(db, AssertionDefect):
                 discard stmt.one()
-            expect AssertionDefect:
+            expectPreparedCountUnchanged(db, AssertionDefect):
                 discard stmt.value()
-            expect AssertionDefect:
+            expectPreparedCountUnchanged(db, AssertionDefect):
                 stmt.exec()
 
 test "stmt.iterate close/finalize":
     withDb:
         let stmt = db.stmt(SelectPersons)
-        expect AssertionDefect:
+        expectPreparedCountUnchanged(db, AssertionDefect):
             for row in stmt.iterate():
                 db.close()
         stmt.finalize()
     withDb:
         let stmt = db.stmt(SelectPersons)
-        expect AssertionDefect:
+        expectPreparedCountUnchanged(db, AssertionDefect):
             for row in stmt.iterate():
                 stmt.finalize()
+
+test "stmt lifecycle changes are rejected during named parameter conversion":
+    withDb:
+        let stmt = db.stmt("SELECT :value")
+
+        expectPreparedCountUnchanged(db, AssertionDefect):
+            discard stmt.value((value: ClosingParam(db: db),))
+        check db.isOpen
+        check stmt.isAlive
+
+        expectPreparedCountUnchanged(db, AssertionDefect):
+            discard stmt.value((value: StatementLifecycleParam(
+                statement: stmt, action: finalizeStatement),))
+        check stmt.isAlive
+
+        expectPreparedCountUnchanged(db, AssertionDefect):
+            discard stmt.value((value: StatementLifecycleParam(
+                statement: stmt, action: reuseStatement),))
+        check stmt.isAlive
+
+        check stmt.value((value: toDb(27),)).get.intVal == 27
+        stmt.finalize()
 
 test "stmt.isAlive":
     withDb:
@@ -602,6 +893,15 @@ test "openDatabase failure releases SQLite memory":
                 discard openDatabase(".", mode)
             check abi.sqlite3_memory_used() == memoryBefore
 
+test "openDatabase rejects embedded NUL bytes":
+    for mode in [dbReadWrite, dbRead]:
+        var opened: DbConn
+        expectSqliteErrorMessage "Database path contains an embedded NUL byte.":
+            opened = openDatabase(":memory:\0ignored", mode)
+        if opened.isOpen:
+            opened.close()
+        check not opened.isOpen
+
 test "ResultRow":
     withDb:
         let row = db.one(SelectPersons).get
@@ -643,6 +943,130 @@ test "Type mappings":
             # sqliteInteger can be treated as bool (or any other ordinal as well)
             let unpackedRow = rows[0].unpack((string, bool, float, Option[int], seq[byte]))
             check unpackedRow[1]
+
+test "toDb rejects ordinals outside SQLite INTEGER range":
+    check toDb(uint64(high(int64))).intVal == high(int64)
+    expectSqliteErrorMessage(
+            "Integer value " & $high(uint64) & " is out of range for SQLite INTEGER."):
+        discard toDb(high(uint64))
+    expect SqliteError:
+        discard toDb(WideUnsignedRange(high(uint64)))
+
+    when sizeof(uint) == sizeof(uint64):
+        check toDb(uint(high(int64))).intVal == high(int64)
+        expect SqliteError:
+            discard toDb(high(uint))
+
+test "ordinal binding failures release statements":
+    const sql = "SELECT :value"
+    for cacheSize in [0, 1]:
+        let db = openDatabase(":memory:", cacheSize = cacheSize)
+        try:
+            check db.value(sql, (value: uint64(high(int64)),)).get.intVal == high(int64)
+            let statementsBefore = db.preparedStatementCount
+            expectPreparedCountUnchanged(db, SqliteError):
+                discard db.value(sql, (value: high(uint64),))
+            check db.value(sql, (value: uint64(high(int64)),)).get.intVal == high(int64)
+            check db.preparedStatementCount == statementsBefore
+        finally:
+            db.close()
+
+    let db = openDatabase(":memory:")
+    let statement = db.stmt(sql)
+    try:
+        expectPreparedCountUnchanged(db, SqliteError):
+            discard statement.value((value: high(uint64),))
+        check statement.value((value: 42'u64,)).get.intVal == 42
+    finally:
+        statement.finalize()
+        db.close()
+
+test "fromDb validates ordinal ranges":
+    let minimum = DbValue(kind: sqliteInteger, intVal: low(int64))
+    let maximum = DbValue(kind: sqliteInteger, intVal: high(int64))
+    check minimum.fromDb(int64) == low(int64)
+    check maximum.fromDb(int64) == high(int64)
+    check maximum.fromDb(uint64) == uint64(high(int64))
+
+    check toDb(-128).fromDb(int8) == -128
+    check toDb(127).fromDb(int8) == 127
+    expectSqliteErrorMessage(
+            "SQLite INTEGER value -129 is out of range for int8."):
+        discard toDb(-129).fromDb(int8)
+    expectSqliteErrorMessage(
+            "SQLite INTEGER value 128 is out of range for int8."):
+        discard toDb(128).fromDb(int8)
+
+    check toDb(0).fromDb(uint8) == 0
+    check toDb(255).fromDb(uint8) == 255
+    expect SqliteError:
+        discard toDb(-1).fromDb(uint8)
+    expect SqliteError:
+        discard toDb(256).fromDb(uint8)
+
+    check not toDb(0).fromDb(bool)
+    check toDb(1).fromDb(bool)
+    expect SqliteError:
+        discard toDb(-1).fromDb(bool)
+    expect SqliteError:
+        discard toDb(2).fromDb(bool)
+
+    check toDb(0).fromDb(TestEnum) == enumZero
+    check toDb(2).fromDb(TestEnum) == enumTwo
+    expect SqliteError:
+        discard toDb(-1).fromDb(TestEnum)
+    expect SqliteError:
+        discard toDb(3).fromDb(TestEnum)
+
+    check toDb(-2).fromDb(SmallIntegerRange) == -2
+    check toDb(2).fromDb(SmallIntegerRange) == 2
+    expect SqliteError:
+        discard toDb(-3).fromDb(SmallIntegerRange)
+    expect SqliteError:
+        discard toDb(3).fromDb(SmallIntegerRange)
+
+    check toDb(255).fromDb(char) == '\xff'
+    expect SqliteError:
+        discard toDb(256).fromDb(char)
+
+test "ordinal decoding failures release statements":
+    for cacheSize in [0, 1]:
+        let db = openDatabase(":memory:", cacheSize = cacheSize)
+        try:
+            check db.value("SELECT 128").get.fromDb(int16) == 128
+            let statementsBefore = db.preparedStatementCount
+            expectPreparedCountUnchanged(db, SqliteError):
+                for row in db.iterate("SELECT 128"):
+                    discard row.unpack((int8,))
+            check db.value("SELECT 128").get.fromDb(int16) == 128
+            check db.preparedStatementCount == statementsBefore
+        finally:
+            db.close()
+
+    let db = openDatabase(":memory:")
+    let statement = db.stmt("SELECT 128")
+    try:
+        expectPreparedCountUnchanged(db, SqliteError):
+            for row in statement.iterate():
+                discard row.unpack((int8,))
+        check statement.value().get.fromDb(int16) == 128
+    finally:
+        statement.finalize()
+        db.close()
+
+test "fromDb returns the requested floating-point type":
+    let single: float32 = toDb(1.25).fromDb(float32)
+    let double: float64 = toDb(1.25).fromDb(float64)
+    check single == 1.25'f32
+    check double == 1.25'f64
+
+test "changes uses SQLite's 64-bit result API":
+    withDb:
+        db.exec("CREATE TABLE ChangeCount(value)")
+        db.exec("INSERT INTO ChangeCount(value) VALUES (1), (2), (3)")
+        let changed = db.changes
+        check changed is int64
+        check changed == 3'i64
 
 test "fromDb validates the SQLite storage class":
     expect SqliteError:

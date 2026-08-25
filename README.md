@@ -87,7 +87,7 @@ Ada: some(36)
 Grace: none(int)
 ```
 
-Always close a connection when it is no longer needed. A `try`/`finally` block is a convenient way to guarantee that cleanup. Closing a connection finalizes the statements in its internal cache. Explicit statements created with `stmt` have their own lifecycle and must be finalized separately.
+Always close a connection when it is no longer needed. A `try`/`finally` block is a convenient way to guarantee that cleanup. Closing a connection finalizes the statements in its internal cache. Explicit statements created with `stmt` have their own lifecycle and must be finalized separately. Closing is rejected with `AssertionDefect` while a connection operation is active, which keeps callbacks and user-defined conversions from invalidating a statement that is being bound or executed.
 
 ## Executing SQL safely
 
@@ -100,11 +100,14 @@ db.exec(
   "Ada"
 )
 
-echo db.changes # rows changed by the most recent INSERT, UPDATE, or DELETE
+let changed: int64 = db.changes # rows changed by the most recent INSERT, UPDATE, or DELETE
 ```
 
 Bound parameters handle quoting and data types correctly. Do not build SQL by interpolating untrusted values into the SQL string.
 Passing multiple statements to a single-statement operation raises `SqliteError`; use `execScript` for scripts containing several statements.
+The complete input is parsed before a single-statement operation executes. Trailing whitespace, extra semicolons, and SQLite comments—including a final `--` comment without a newline—do not count as another statement. A second statement, invalid trailing SQL, or an incomplete block comment or quoted token raises `SqliteError` before the first statement executes.
+Single-statement operations require an actual SQL statement: empty, whitespace-only, semicolon-only, and comment-only input raises a clear `SqliteError`. `execScript` intentionally treats those inputs as no-ops. Every SQL operation rejects embedded NUL bytes instead of allowing SQLite to silently truncate the input at the first NUL.
+If an `exec` statement produces rows—for example, `SELECT` or a statement with `RETURNING`—the rows are discarded, but SQLite is stepped through every row until the statement completes. A runtime error on any row raises `SqliteError`.
 
 For order-independent binding, use SQLite `:name` parameters and pass a named tuple. Each tuple field binds the parameter with the same name, regardless of where either one appears:
 
@@ -120,7 +123,7 @@ db.exec(
 
 Named tuples are supported by `exec`, `iterate`, `all`, `one`, and `value`, as well as their prepared-statement counterparts. `execMany` accepts an array or sequence of named tuples. Repeated occurrences of the same parameter, such as `:name = :name`, share one tuple field. Missing parameters, unknown tuple fields, or mixing a named tuple with positional `?` parameters raises `SqliteError`.
 
-Use `execScript` when schema setup or a migration contains several statements. The complete script runs in a transaction:
+Use `execScript` when schema setup or a migration contains several statements. Empty, semicolon-only, and comment-only scripts are no-ops. Incomplete or invalid input raises `SqliteError`. Every statement is run to completion and the complete script runs in a transaction. When `execScript` starts that transaction, a runtime error after an earlier result row aborts and rolls back the script:
 
 ```nim
 db.execScript("""
@@ -181,7 +184,11 @@ The built-in conversions are:
 | `seq[byte]` | `BLOB` |
 | `Option[T]` or `nil` | `NULL` when empty; otherwise the mapping for `T` |
 
-Use `toDb` to convert a Nim value explicitly and `fromDb` to convert a result. Built-in `fromDb` conversions require the matching SQLite storage class and raise `SqliteError` on a mismatch. You can support application-specific types by defining matching overloads:
+Embedded NUL bytes remain valid data in bound `string` (`TEXT`) and `seq[byte]` (`BLOB`) values; the SQL-input restriction does not apply to bound values.
+
+SQLite `INTEGER` values are signed 64-bit integers. Binding an unsigned ordinal above `high(int64)`, or decoding an integer into a narrower integer, range, boolean, character, or enum that cannot represent it, raises `SqliteError` instead of wrapping or depending on compiler range checks. Floating-point decoding returns the requested Nim floating-point type.
+
+Use `toDb` to convert a Nim value explicitly and `fromDb` to convert a result. Built-in `fromDb` conversions require the matching SQLite storage class and raise `SqliteError` on a mismatch or an out-of-range integer. You can support application-specific types by defining matching overloads:
 
 ```nim
 import std/times
@@ -243,7 +250,9 @@ The transaction commits when the block finishes normally and rolls back when an 
 
 Normal connection methods automatically cache recently prepared SQL statements. The default cache holds 100 statements, so manual statement management is usually unnecessary. Set `cacheSize = 0` when opening a database to disable the cache.
 
-Cached statements are leased to one connection-level operation at a time. If nested or reentrant code executes SQL whose cached statement is already leased or busy, the operation uses a temporary statement and finalizes it afterward. Cache eviction also skips leased and busy statements. This keeps nested queries independent, including when they use the same SQL with different parameters. Explicit statements created with `stmt` are single-use while executing and reject reentrant use.
+Cached statements are leased to one connection-level operation at a time. If nested or reentrant code executes SQL whose cached statement is already leased or busy, the operation uses a temporary statement and finalizes it afterward. Cache eviction also skips leased and busy statements. This keeps nested connection queries independent, including when they use the same SQL with different parameters.
+
+Explicit statements created with `stmt` are single-use for their complete binding and execution lifecycle. Reusing or finalizing the same statement, or closing its connection, from an active iterator or a user-defined named-parameter `toDb` conversion raises `AssertionDefect`. The guard is released after successful execution, binding failures, exceptions, and iterator early exits, so the statement remains reusable afterward.
 
 For explicit reuse, prepare and finalize a statement yourself:
 
@@ -279,7 +288,7 @@ let writableDb = openDatabase("application.db")             # dbReadWrite
 let readonlyDb = openDatabase("application.db", dbRead)     # must already exist
 ```
 
-`dbReadWrite` is the default and creates the database file when necessary. `dbRead` opens an existing database without write access. Each opened connection must eventually be closed, and each explicit prepared statement must eventually be finalized.
+`dbReadWrite` is the default and creates the database file when necessary. `dbRead` opens an existing database without write access. Database and extension paths containing embedded NUL bytes raise `SqliteError` before they are passed to SQLite. Each opened connection must eventually be closed, and each explicit prepared statement must eventually be finalized.
 
 SQLite failures raise `SqliteError`. Programming errors such as using a closed connection or a finalized statement are detected with assertions.
 
@@ -305,7 +314,9 @@ Run the test suite with:
 nimble test -Y
 ```
 
-The tests cover connection lifecycle, queries, transactions, prepared statements, caching, type conversion, extensions, and foreign keys.
+The tests cover connection lifecycle, queries, transactions, prepared statements, caching, type conversion, extensions, and foreign keys. Failure-path regressions also assert that prepared-handle counts remain stable after rejected lifecycle operations, binding and decoding errors, parser failures, and runtime SQLite errors.
+
+CI runs stable and development Nim across Linux, macOS, and Windows. A pinned Linux hardening matrix additionally runs normal, release, and danger ORC builds, an ARC build, AddressSanitizer, and UndefinedBehaviorSanitizer.
 
 Run all examples with:
 

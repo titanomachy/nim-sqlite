@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, development ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, development ]
   workflow_dispatch:
 
 permissions:
@@ -53,6 +53,53 @@ jobs:
 
       - name: Verify installation
         run: nimble install -Y
+
+  phase-one-verification:
+    name: Phase 1 / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: normal-orc
+            flags: --mm:orc
+          - name: release-orc
+            flags: --mm:orc -d:release
+          - name: danger-orc
+            flags: --mm:orc -d:danger
+          - name: normal-arc
+            flags: --mm:arc
+          - name: address-sanitizer
+            flags: --mm:orc --passC:-fsanitize=address --passC:-fno-omit-frame-pointer --passL:-fsanitize=address
+          - name: undefined-behavior-sanitizer
+            flags: --mm:orc --passC:-fsanitize=undefined --passC:-fno-sanitize-recover=undefined --passL:-fsanitize=undefined
+
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: "2.2.10"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install dependencies
+        run: nimble install --depsOnly -Y
+
+      - name: Run ${{ matrix.name }} tests
+        run: >-
+          nim c -r
+          --path:src
+          --nimcache:build/nimcache/${{ matrix.name }}
+          --out:build/tests-${{ matrix.name }}
+          ${{ matrix.flags }}
+          tests/tests.nim
 
   documentation:
     name: Documentation and coverage
