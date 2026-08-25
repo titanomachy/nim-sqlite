@@ -32,6 +32,32 @@ type
         dbRead,
         dbReadWrite
 
+    OpenMode* {.pure.} = enum
+        ## Controls whether opening a database may create or modify its main
+        ## database file.
+        readWriteCreate,
+        readWriteExisting,
+        readOnly
+
+    SecurityProfile* {.pure.} = enum
+        ## Selects connection-level SQLite security settings. ``normal`` keeps
+        ## SQLite's compatibility defaults. ``hardened`` enables defensive mode
+        ## and disables trusted-schema behavior, which can reject databases that
+        ## rely on non-innocuous functions or virtual tables in their schema.
+        normal,
+        hardened
+
+    OpenOptions* = object
+        ## Options for opening a database connection. Start with
+        ## ``defaultOpenOptions`` when changing only selected fields.
+        mode*: OpenMode ## File access and creation behavior.
+        cacheSize*: Natural ## Maximum number of connection-cached statements.
+        busyTimeoutMs*: int64 ## Lock wait budget in milliseconds; zero
+                              ## disables the busy timeout.
+        uriFilename*: bool ## Interpret a ``file:`` path as an SQLite URI.
+        noFollow*: bool ## Reject database paths containing symbolic links.
+        securityProfile*: SecurityProfile ## SQLite security configuration.
+
     TransactionMode* {.pure.} = enum
         ## Controls how an outermost ``transaction`` acquires SQLite locks.
         ## Nested transactions use savepoints, so their mode is inherited from
@@ -108,6 +134,16 @@ type
     ResultRow* = object
         values: seq[DbValue]
         columns: seq[string]
+
+const defaultOpenOptions* = OpenOptions(
+    mode: OpenMode.readWriteCreate,
+    cacheSize: 100,
+    busyTimeoutMs: 0,
+    uriFilename: false,
+    noFollow: false,
+    securityProfile: SecurityProfile.normal)
+    ## Compatibility defaults used by the convenience ``openDatabase``
+    ## overload. Copy this value before changing selected options.
 
 # Forward declarations
 proc isInTransaction*(db: DbConn): bool {.noSideEffect.}
@@ -1067,6 +1103,83 @@ proc isAlive*(statement: SqlStatement): bool =
     (not SqlStatementImpl(statement).isNil) and (not statement.handle.isNil) and
         (not statement.db.handle.isNil)
 
+proc openDatabase*(path: string, options: OpenOptions): DbConn =
+    ## Open a database connection using explicit options. ``readOnly`` and
+    ## ``readWriteExisting`` never create the main database file;
+    ## ``readWriteCreate`` creates it when necessary. SQLite can fall back from
+    ## ``readWriteExisting`` to read-only access when operating-system
+    ## permissions prevent writing; use `isReadonly` to inspect the result.
+    ##
+    ## ``busyTimeoutMs`` controls how long SQLite's busy handler may sleep while
+    ## waiting on a lock. ``uriFilename`` enables SQLite URI filename parsing,
+    ## whose query parameters can make the requested mode more restrictive.
+    ## ``noFollow`` requests ``SQLITE_OPEN_NOFOLLOW``. The hardened security
+    ## profile enables ``SQLITE_DBCONFIG_DEFENSIVE`` and disables
+    ## ``SQLITE_DBCONFIG_TRUSTED_SCHEMA``. It can reject otherwise valid schemas
+    ## and is not a sandbox for hostile SQL or database files.
+    ##
+    ## Paths containing embedded NUL bytes raise ``SqliteError``. Opening also
+    ## fails if the busy timeout cannot be represented by SQLite's ``cint`` API.
+    runnableExamples:
+        var options = defaultOpenOptions
+        options.mode = OpenMode.readWriteExisting
+        options.busyTimeoutMs = 1_000
+        let db = openDatabase(":memory:", options)
+        db.close()
+    rejectEmbeddedNul(path, "Database path")
+    if options.busyTimeoutMs < 0 or options.busyTimeoutMs > int64(high(cint)):
+        raise newSqliteError(
+            "Busy timeout is out of range for SQLite.",
+            SqliteOperation.validation)
+
+    let db = new DbConnImpl
+    if options.cacheSize > 0:
+        db.cache = initStmtCache(options.cacheSize)
+    result = DbConn(db)
+
+    var flags: cint
+    case options.mode
+    of OpenMode.readWriteCreate:
+        flags = abi.SQLITE_OPEN_READWRITE or abi.SQLITE_OPEN_CREATE
+    of OpenMode.readWriteExisting:
+        flags = abi.SQLITE_OPEN_READWRITE
+    of OpenMode.readOnly:
+        flags = abi.SQLITE_OPEN_READONLY
+    if options.uriFilename:
+        flags = flags or abi.SQLITE_OPEN_URI
+    if options.noFollow:
+        flags = flags or abi.SQLITE_OPEN_NOFOLLOW
+
+    var initialized = false
+    try:
+        let rc = abi.sqlite3_open_v2(path, addr db.handle, flags, nil)
+        result.checkOk(rc, SqliteOperation.openDatabase)
+
+        result.checkOk(
+            abi.sqlite3_busy_timeout(db.handle, cint(options.busyTimeoutMs)),
+            SqliteOperation.openDatabase)
+        if options.securityProfile == SecurityProfile.hardened:
+            result.checkOk(
+                abi.sqlite3_db_config(db.handle,
+                    abi.SQLITE_DBCONFIG_DEFENSIVE, 1, 0),
+                SqliteOperation.openDatabase)
+            result.checkOk(
+                abi.sqlite3_db_config(db.handle,
+                    abi.SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0, 0),
+                SqliteOperation.openDatabase)
+
+        result.exec("PRAGMA encoding = 'UTF-8'")
+        result.exec("PRAGMA foreign_keys = ON")
+        initialized = true
+    finally:
+        if not initialized:
+            # SQLite may allocate a connection handle even when opening fails.
+            # Initialization can also fail after cached statements are prepared.
+            db.cache.clear()
+            if not db.handle.isNil:
+                discard abi.sqlite3_close_v2(db.handle)
+                db.handle = nil
+
 proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): DbConn =
     ## Open a new database connection to a database file. To create an
     ## in-memory database the special path `":memory:"` can be used.
@@ -1084,33 +1197,12 @@ proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): 
     ## operation. Leased and busy statements are not evicted from the cache.
     runnableExamples:
         let memDb = openDatabase(":memory:")
-    rejectEmbeddedNul(path, "Database path")
-    var handle: ptr abi.sqlite3
-    let db = new DbConnImpl
-    db.handle = handle
-    if cacheSize > 0:
-        db.cache = initStmtCache(cacheSize)
-    result = DbConn(db)
-    var initialized = false
-    try:
-        case mode
-        of dbReadWrite:
-            let rc = abi.sqlite3_open(path, addr db.handle)
-            result.checkOk(rc, SqliteOperation.openDatabase)
-        of dbRead:
-            let rc = abi.sqlite3_open_v2(path, addr db.handle, abi.SQLITE_OPEN_READONLY, nil)
-            result.checkOk(rc, SqliteOperation.openDatabase)
-        result.exec("PRAGMA encoding = 'UTF-8'")
-        result.exec("PRAGMA foreign_keys = ON")
-        initialized = true
-    finally:
-        if not initialized:
-            # SQLite may allocate a connection handle even when opening fails.
-            # Initialization can also fail after cached statements are prepared.
-            db.cache.clear()
-            if not db.handle.isNil:
-                discard abi.sqlite3_close_v2(db.handle)
-                db.handle = nil
+    var options = defaultOpenOptions
+    options.mode = case mode
+        of dbReadWrite: OpenMode.readWriteCreate
+        of dbRead: OpenMode.readOnly
+    options.cacheSize = cacheSize
+    openDatabase(path, options)
 
 proc loadExtension*(db: DbConn, path: string) =
     ## Load an SQLite extension. Will raise a ``SqliteError`` exception if loading fails.

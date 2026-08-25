@@ -60,6 +60,36 @@ Grace: none(int)
 
 Close each database when you finish with it. A `try`/`finally` block is a convenient way to make cleanup unconditional.
 
+## Opening a connection
+
+The convenience overload opens an existing database or creates it when missing,
+uses a 100-entry statement cache, and keeps SQLite's normal compatibility
+settings. Use `OpenOptions` when opening behavior must be explicit:
+
+```nim
+var options = defaultOpenOptions
+options.mode = OpenMode.readWriteExisting
+options.cacheSize = 50
+options.busyTimeoutMs = 5_000
+options.noFollow = true
+options.securityProfile = SecurityProfile.hardened
+
+let db = openDatabase("app.sqlite", options)
+```
+
+`OpenMode.readOnly` and `OpenMode.readWriteExisting` never create the main
+database file; `OpenMode.readWriteCreate` preserves the convenience overload's
+create-if-missing behavior. Set `cacheSize` to zero to disable connection-level
+statement caching. Set `uriFilename` only when the path is intentionally an
+SQLite `file:` URI.
+
+The busy timeout makes ordinary lock contention less brittle, while `noFollow`
+rejects paths containing symbolic links. The hardened profile enables SQLite's
+defensive mode and disables trusted-schema behavior. It can reject schemas that
+use application-defined functions or virtual tables and does not make SQLite a
+sandbox. See [Safety and hardening](SAFETY.md) for the complete opening and
+security contract.
+
 ## Handling errors
 
 SQLite and validation failures raise `SqliteError`. Its `primaryCode`,

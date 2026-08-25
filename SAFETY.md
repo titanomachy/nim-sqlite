@@ -49,6 +49,57 @@ using a closed connection, using a finalized statement, reusing an active explic
 statement, and closing or finalizing a handle during one of its active operations.
 Internal invariant failures remain defects.
 
+## Connection opening and lock handling
+
+The compatibility `openDatabase(path, mode, cacheSize)` overload retains its
+existing behavior: `dbReadWrite` opens or creates the main database,
+`dbRead` requires an existing database, the statement cache holds up to 100
+entries by default, URI interpretation is not requested, and no busy timeout is
+installed.
+
+The `OpenOptions` overload separates the file modes:
+
+- `OpenMode.readOnly` requires an existing database and prevents writes.
+- `OpenMode.readWriteExisting` requires an existing database and prevents a
+  misspelled path from creating an empty one. SQLite may still fall back to
+  read-only access if operating-system permissions prevent writing, so inspect
+  `isReadonly` when writable access is mandatory.
+- `OpenMode.readWriteCreate` opens or creates the database.
+
+Start with `defaultOpenOptions` when changing selected fields. A directly
+zero-initialized `OpenOptions` value has a zero-entry statement cache, whereas
+`defaultOpenOptions` and the compatibility overload use 100 entries.
+
+`busyTimeoutMs` installs SQLite's single per-connection busy handler. It allows
+SQLite to sleep and retry during ordinary lock contention until the configured
+sleep budget is reached. SQLite can still return `SQLITE_BUSY` earlier when
+invoking the handler could contribute to a deadlock. Zero disables the timeout,
+and negative values or values outside SQLite's signed `cint` range are rejected
+before a connection is allocated.
+
+`uriFilename` requests SQLite URI filename interpretation. URI parameters can
+select a VFS or change access, cache, locking, and immutable-file behavior. Only
+enable it for intentionally constructed `file:` URIs, and do not append
+untrusted query parameters. A URI `mode` may make `OpenOptions.mode` more
+restrictive, but SQLite rejects a URI that attempts to make it less restrictive.
+
+`noFollow` passes `SQLITE_OPEN_NOFOLLOW`, causing database paths containing a
+symbolic link to be rejected. It is opt-in because existing deployments may
+intentionally use symlinked paths.
+
+`SecurityProfile.hardened` enables `SQLITE_DBCONFIG_DEFENSIVE` and disables
+`SQLITE_DBCONFIG_TRUSTED_SCHEMA` before the library executes initialization SQL.
+This prevents ordinary SQL from enabling features intended to modify SQLite's
+internal schema representation and prevents non-innocuous application functions
+or virtual tables from being invoked indirectly by schema objects. It can reject
+legitimate databases relying on those compatibility behaviors.
+
+The hardened profile is an additional defense, not a sandbox or integrity check.
+It does not impose application-specific resource limits, disable triggers, views,
+or attachment, validate an untrusted database file, or authorize user-supplied
+SQL. The library also does not silently enable WAL or change synchronous or
+journal durability settings; those remain application policy.
+
 ## Connection and statement lifecycles
 
 A database connection must be closed when no longer needed. Closing finalizes statements held by its internal cache.
@@ -87,8 +138,9 @@ Preparation, binding, decoding, parsing, and execution failures clean up or rese
 The test suite includes focused failure-path checks for structured primary and
 extended result codes, error categories, sensitive bound values, connection and
 statement lifecycles, reentrant conversions, parser failures, range errors,
-row-producing execution errors, nested savepoints, transaction modes, cleanup,
-and rollback behavior.
+open modes, busy lock contention, URI filenames, symbolic-link rejection,
+hardened connection settings, row-producing execution errors, nested savepoints,
+transaction modes, cleanup, and rollback behavior.
 
 CI exercises:
 

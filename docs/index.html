@@ -87,7 +87,19 @@
     nil">DbValue</a></li>
 <li><a class="reference" href="#DbValueKind" title="DbValueKind = enum
   sqliteNull, sqliteInteger, sqliteReal, sqliteText, sqliteBlob">DbValueKind</a></li>
+<li><a class="reference" href="#OpenMode" title="OpenMode {.pure.} = enum
+  readWriteCreate, readWriteExisting, readOnly">OpenMode</a></li>
+<li><a class="reference" href="#OpenOptions" title="OpenOptions = object
+  mode*: OpenMode            ## File access and creation behavior.
+  cacheSize*: Natural        ## Maximum number of connection-cached statements.
+  busyTimeoutMs*: int64      ## Lock wait budget in milliseconds; zero
+                             ## disables the busy timeout.
+  uriFilename*: bool         ## Interpret a ``file:`` path as an SQLite URI.
+  noFollow*: bool            ## Reject database paths containing symbolic links.
+  securityProfile*: SecurityProfile ## SQLite security configuration.">OpenOptions</a></li>
 <li><a class="reference" href="#ResultRow" title="ResultRow = object">ResultRow</a></li>
+<li><a class="reference" href="#SecurityProfile" title="SecurityProfile {.pure.} = enum
+  normal, hardened">SecurityProfile</a></li>
 <li><a class="reference" href="#SqliteError" title="SqliteError = object of CatchableError
   primaryCode*: int32        ## SQLite's primary result code, or zero for a
                              ## library-side error.
@@ -103,6 +115,17 @@
 <li><a class="reference" href="#SqlStatement" title="SqlStatement = distinct SqlStatementImpl">SqlStatement</a></li>
 <li><a class="reference" href="#TransactionMode" title="TransactionMode {.pure.} = enum
   deferred, immediate, exclusive">TransactionMode</a></li>
+
+    </ul>
+  </details>
+</li>
+<li>
+  <details open>
+    <summary><a class="reference reference-toplevel" href="#10" id="60">Consts</a></summary>
+    <ul class="simple simple-toc-section">
+      <li><a class="reference" href="#defaultOpenOptions" title="defaultOpenOptions = (mode: OpenMode.readWriteCreate, cacheSize: 100,
+                      busyTimeoutMs: 0, uriFilename: false, noFollow: false,
+                      securityProfile: SecurityProfile.normal)">defaultOpenOptions</a></li>
 
     </ul>
   </details>
@@ -211,6 +234,7 @@
 </ul>
 <ul class="simple nested-toc-section">openDatabase
   <li><a class="reference" href="#openDatabase%2Cstring%2CNatural" title="openDatabase(path: string; mode = dbReadWrite; cacheSize: Natural = 100): DbConn">openDatabase(path: string; mode = dbReadWrite; cacheSize: Natural = 100): DbConn</a></li>
+<li><a class="reference" href="#openDatabase%2Cstring%2COpenOptions" title="openDatabase(path: string; options: OpenOptions): DbConn">openDatabase(path: string; options: OpenOptions): DbConn</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">rows
@@ -298,7 +322,16 @@
 <h1><a class="toc-backref" id="opening-a-database-connectiondot" href="#opening-a-database-connectiondot">Opening a database connection.</a></h1><p>A database connection is opened by calling the <a class="reference external" href="#openDatabase,string,Natural">openDatabase</a> procedure with the path to the database file as an argument. If the file doesn't exist, it will be created. An in-memory database can be created by using the special path <tt class="docutils literal"><span class="pre"><span class="StringLit">&quot;:memory:&quot;</span></span></tt> as an argument. Once the database connection is no longer needed, <a class="reference external" href="#close,DbConn">close</a> must be called to prevent memory leaks. Closing a connection finalizes its internally cached statements. Explicit statements created with <tt class="docutils literal"><span class="pre">stmt</span></tt> own their handles and must be finalized separately. Closing is rejected with <tt class="docutils literal"><span class="pre">SqliteUsageError</span></tt> while a connection operation is active, preventing callbacks and user-defined conversions from invalidating a statement that is being bound or executed. Database and extension paths containing embedded NUL bytes raise <tt class="docutils literal"><span class="pre">SqliteError</span></tt> before they are passed to SQLite.</p>
 <pre class="listing"><span class="Keyword">let</span> <span class="Identifier">db</span> <span class="Operator">=</span> <span class="Identifier">openDatabase</span><span class="Punctuation">(</span><span class="StringLit">&quot;path/to/file.db&quot;</span><span class="Punctuation">)</span>
 <span class="Comment"># ... (do something with `db`)</span>
-<span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">close</span><span class="Punctuation">(</span><span class="Punctuation">)</span></pre>
+<span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">close</span><span class="Punctuation">(</span><span class="Punctuation">)</span></pre><p>The compatibility overload opens or creates the database, uses a 100-entry statement cache, and keeps SQLite's normal connection settings. For explicit opening behavior, copy <tt class="docutils literal"><span class="pre">defaultOpenOptions</span></tt> and pass the resulting <tt class="docutils literal"><span class="pre">OpenOptions</span></tt> value:</p>
+<pre class="listing"><span class="Keyword">var</span> <span class="Identifier">options</span> <span class="Operator">=</span> <span class="Identifier">defaultOpenOptions</span>
+<span class="Identifier">options</span><span class="Operator">.</span><span class="Identifier">mode</span> <span class="Operator">=</span> <span class="Identifier">OpenMode</span><span class="Operator">.</span><span class="Identifier">readWriteExisting</span>
+<span class="Identifier">options</span><span class="Operator">.</span><span class="Identifier">cacheSize</span> <span class="Operator">=</span> <span class="DecNumber">50</span>
+<span class="Identifier">options</span><span class="Operator">.</span><span class="Identifier">busyTimeoutMs</span> <span class="Operator">=</span> <span class="DecNumber">5_000</span>
+<span class="Identifier">options</span><span class="Operator">.</span><span class="Identifier">noFollow</span> <span class="Operator">=</span> <span class="Identifier">true</span>
+<span class="Identifier">options</span><span class="Operator">.</span><span class="Identifier">securityProfile</span> <span class="Operator">=</span> <span class="Identifier">SecurityProfile</span><span class="Operator">.</span><span class="Identifier">hardened</span>
+<span class="Keyword">let</span> <span class="Identifier">db</span> <span class="Operator">=</span> <span class="Identifier">openDatabase</span><span class="Punctuation">(</span><span class="StringLit">&quot;path/to/existing.db&quot;</span><span class="Punctuation">,</span> <span class="Identifier">options</span><span class="Punctuation">)</span></pre><p><tt class="docutils literal"><span class="pre">OpenMode.readOnly</span></tt> and <tt class="docutils literal"><span class="pre">OpenMode.readWriteExisting</span></tt> never create the main database file; <tt class="docutils literal"><span class="pre">OpenMode.readWriteCreate</span></tt> creates it when missing. SQLite may fall back from read-write-existing to read-only access when operating-system permissions require it, so use <tt class="docutils literal"><span class="pre">isReadonly</span></tt> when writable access is mandatory. <tt class="docutils literal"><span class="pre">busyTimeoutMs</span></tt> gives ordinary lock contention a bounded retry period. <tt class="docutils literal"><span class="pre">uriFilename</span></tt> enables intentional SQLite <tt class="docutils literal"><span class="pre">file:</span></tt> URI interpretation, including URI parameters that can affect access and locking. <tt class="docutils literal"><span class="pre">noFollow</span></tt> rejects database paths containing symbolic links.</p>
+<p><tt class="docutils literal"><span class="pre">SecurityProfile.hardened</span></tt> enables SQLite defensive mode and disables trusted-schema behavior before initialization SQL runs. This can reject legitimate schemas that rely on application-defined functions or virtual tables. It is an additional defense rather than a sandbox, and it does not change WAL or durability policy. See <tt class="docutils literal"><span class="pre">SAFETY.md</span></tt> for the complete connection-opening and security contract.</p>
+
 <h1><a class="toc-backref" id="executing-sql" href="#executing-sql">Executing SQL</a></h1><p>The <a class="reference external" href="#exec,DbConn,string,varargs[DbValue,toDb]">exec</a> procedure can be used to execute a single SQL statement. The <a class="reference external" href="#execScript,DbConn,string">execScript</a> procedure is used to execute several statements, but it doesn't support parameter substitution.</p>
 <p>Single-statement operations validate the complete input before execution:</p>
 <ul class="simple"><li>Trailing whitespace, extra semicolons, and complete SQLite comments are allowed. This includes a final <tt class="docutils literal"><span class="pre">--</span></tt> comment without a newline.</li>
@@ -479,11 +512,44 @@ Enum of all possible value types in a SQLite database.
 
   </dd>
 </div>
+<div id="OpenMode">
+  <dt><pre><a href="#OpenMode"><span class="Identifier">OpenMode</span></a> {.<span class="Identifier">pure</span>.} <span class="Other">=</span> <span class="Keyword">enum</span>
+  <span class="Identifier">readWriteCreate</span><span class="Other">,</span> <span class="Identifier">readWriteExisting</span><span class="Other">,</span> <span class="Identifier">readOnly</span></pre></dt>
+  <dd>
+
+    Controls whether opening a database may create or modify its main database file.
+
+  </dd>
+</div>
+<div id="OpenOptions">
+  <dt><pre><a href="#OpenOptions"><span class="Identifier">OpenOptions</span></a> <span class="Other">=</span> <span class="Keyword">object</span>
+  <span class="Identifier">mode</span><span class="Operator">*</span><span class="Other">:</span> <a href="#OpenMode"><span class="Identifier">OpenMode</span></a>            <span class="Comment">## File access and creation behavior.</span>
+  <span class="Identifier">cacheSize</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">Natural</span>        <span class="Comment">## Maximum number of connection-cached statements.</span>
+  <span class="Identifier">busyTimeoutMs</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int64</span>      <span class="Comment">## Lock wait budget in milliseconds; zero</span>
+                             <span class="Comment">## disables the busy timeout.</span>
+  <span class="Identifier">uriFilename</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span>         <span class="Comment">## Interpret a ``file:`` path as an SQLite URI.</span>
+  <span class="Identifier">noFollow</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span>            <span class="Comment">## Reject database paths containing symbolic links.</span>
+  <span class="Identifier">securityProfile</span><span class="Operator">*</span><span class="Other">:</span> <a href="#SecurityProfile"><span class="Identifier">SecurityProfile</span></a> <span class="Comment">## SQLite security configuration.</span></pre></dt>
+  <dd>
+
+    Options for opening a database connection. Start with <tt class="docutils literal"><span class="pre">defaultOpenOptions</span></tt> when changing only selected fields.
+
+  </dd>
+</div>
 <div id="ResultRow">
   <dt><pre><a href="#ResultRow"><span class="Identifier">ResultRow</span></a> <span class="Other">=</span> <span class="Keyword">object</span></pre></dt>
   <dd>
 
 
+
+  </dd>
+</div>
+<div id="SecurityProfile">
+  <dt><pre><a href="#SecurityProfile"><span class="Identifier">SecurityProfile</span></a> {.<span class="Identifier">pure</span>.} <span class="Other">=</span> <span class="Keyword">enum</span>
+  <span class="Identifier">normal</span><span class="Other">,</span> <span class="Identifier">hardened</span></pre></dt>
+  <dd>
+
+    Selects connection-level SQLite security settings. <tt class="docutils literal"><span class="pre">normal</span></tt> keeps SQLite's compatibility defaults. <tt class="docutils literal"><span class="pre">hardened</span></tt> enables defensive mode and disables trusted-schema behavior, which can reject databases that rely on non-innocuous functions or virtual tables in their schema.
 
   </dd>
 </div>
@@ -534,6 +600,22 @@ Enum of all possible value types in a SQLite database.
   <dd>
 
     Controls how an outermost <tt class="docutils literal"><span class="pre">transaction</span></tt> acquires SQLite locks. Nested transactions use savepoints, so their mode is inherited from the surrounding transaction.
+
+  </dd>
+</div>
+
+  </dl>
+</div>
+<div class="section" id="10">
+  <h1><a class="toc-backref" href="#10">Consts</a></h1>
+  <dl class="item">
+    <div id="defaultOpenOptions">
+  <dt><pre><a href="#defaultOpenOptions"><span class="Identifier">defaultOpenOptions</span></a> <span class="Other">=</span> <span class="Other">(</span><span class="Identifier">mode</span><span class="Other">:</span> <span class="DecNumber">OpenMode.readWriteCreate</span><span class="Other">,</span> <span class="Identifier">cacheSize</span><span class="Other">:</span> <span class="DecNumber">100</span><span class="Other">,</span>
+                      <span class="Identifier">busyTimeoutMs</span><span class="Other">:</span> <span class="DecNumber">0</span><span class="Other">,</span> <span class="Identifier">uriFilename</span><span class="Other">:</span> <span class="DecNumber">false</span><span class="Other">,</span> <span class="Identifier">noFollow</span><span class="Other">:</span> <span class="DecNumber">false</span><span class="Other">,</span>
+                      <span class="Identifier">securityProfile</span><span class="Other">:</span> <span class="DecNumber">SecurityProfile.normal</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Compatibility defaults used by the convenience <tt class="docutils literal"><span class="pre">openDatabase</span></tt> overload. Copy this value before changing selected options.
 
   </dd>
 </div>
@@ -963,8 +1045,8 @@ Enum of all possible value types in a SQLite database.
 <div id="openDatabase-procs-all">
   <div id="openDatabase,string,Natural">
   <dt><pre><span class="Keyword">proc</span> <a href="#openDatabase%2Cstring%2CNatural"><span class="Identifier">openDatabase</span></a><span class="Other">(</span><span class="Identifier">path</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">mode</span> <span class="Other">=</span> <span class="Identifier">dbReadWrite</span><span class="Other">;</span> <span class="Identifier">cacheSize</span><span class="Other">:</span> <span class="Identifier">Natural</span> <span class="Other">=</span> <span class="DecNumber">100</span><span class="Other">)</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteUsageError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteUsageError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
 
     <p>Open a new database connection to a database file. To create an in-memory database the special path <tt class="docutils literal"><span class="pre"><span class="StringLit">&quot;:memory:&quot;</span></span></tt> can be used. If the database doesn't already exist and <tt class="docutils literal"><span class="pre">mode</span></tt> is <tt class="docutils literal"><span class="pre">dbReadWrite</span></tt>, the database will be created. If the database doesn't exist and <tt class="docutils literal"><span class="pre">mode</span></tt> is <tt class="docutils literal"><span class="pre">dbRead</span></tt>, a <tt class="docutils literal"><span class="pre">SqliteError</span></tt> exception will be raised. Paths containing embedded NUL bytes also raise <tt class="docutils literal"><span class="pre">SqliteError</span></tt>.</p>
@@ -973,6 +1055,25 @@ Enum of all possible value types in a SQLite database.
 
 <p><strong class="examples_text">Example:</strong></p>
 <pre class="listing"><span class="Keyword">let</span> <span class="Identifier">memDb</span> <span class="Operator">=</span> <span class="Identifier">openDatabase</span><span class="Punctuation">(</span><span class="StringLit">&quot;:memory:&quot;</span><span class="Punctuation">)</span></pre>
+
+  </dd>
+</div>
+<div id="openDatabase,string,OpenOptions">
+  <dt><pre><span class="Keyword">proc</span> <a href="#openDatabase%2Cstring%2COpenOptions"><span class="Identifier">openDatabase</span></a><span class="Other">(</span><span class="Identifier">path</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">options</span><span class="Other">:</span> <a href="#OpenOptions"><span class="Identifier">OpenOptions</span></a><span class="Other">)</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteUsageError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    <p>Open a database connection using explicit options. <tt class="docutils literal"><span class="pre">readOnly</span></tt> and <tt class="docutils literal"><span class="pre">readWriteExisting</span></tt> never create the main database file; <tt class="docutils literal"><span class="pre">readWriteCreate</span></tt> creates it when necessary. SQLite can fall back from <tt class="docutils literal"><span class="pre">readWriteExisting</span></tt> to read-only access when operating-system permissions prevent writing; use <tt class="docutils literal"><span class="pre"><span class="Identifier">isReadonly</span></span></tt> to inspect the result.</p>
+<p><tt class="docutils literal"><span class="pre">busyTimeoutMs</span></tt> controls how long SQLite's busy handler may sleep while waiting on a lock. <tt class="docutils literal"><span class="pre">uriFilename</span></tt> enables SQLite URI filename parsing, whose query parameters can make the requested mode more restrictive. <tt class="docutils literal"><span class="pre">noFollow</span></tt> requests <tt class="docutils literal"><span class="pre">SQLITE_OPEN_NOFOLLOW</span></tt>. The hardened security profile enables <tt class="docutils literal"><span class="pre">SQLITE_DBCONFIG_DEFENSIVE</span></tt> and disables <tt class="docutils literal"><span class="pre">SQLITE_DBCONFIG_TRUSTED_SCHEMA</span></tt>. It can reject otherwise valid schemas and is not a sandbox for hostile SQL or database files.</p>
+<p>Paths containing embedded NUL bytes raise <tt class="docutils literal"><span class="pre">SqliteError</span></tt>. Opening also fails if the busy timeout cannot be represented by SQLite's <tt class="docutils literal"><span class="pre">cint</span></tt> API.</p>
+
+<p><strong class="examples_text">Example:</strong></p>
+<pre class="listing"><span class="Keyword">var</span> <span class="Identifier">options</span> <span class="Operator">=</span> <span class="Identifier">defaultOpenOptions</span>
+<span class="Identifier">options</span><span class="Operator">.</span><span class="Identifier">mode</span> <span class="Operator">=</span> <span class="Identifier">OpenMode</span><span class="Operator">.</span><span class="Identifier">readWriteExisting</span>
+<span class="Identifier">options</span><span class="Operator">.</span><span class="Identifier">busyTimeoutMs</span> <span class="Operator">=</span> <span class="DecNumber">1_000</span>
+<span class="Keyword">let</span> <span class="Identifier">db</span> <span class="Operator">=</span> <span class="Identifier">openDatabase</span><span class="Punctuation">(</span><span class="StringLit">&quot;:memory:&quot;</span><span class="Punctuation">,</span> <span class="Identifier">options</span><span class="Punctuation">)</span>
+<span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">close</span><span class="Punctuation">(</span><span class="Punctuation">)</span></pre>
 
   </dd>
 </div>
@@ -1239,7 +1340,7 @@ Enum of all possible value types in a SQLite database.
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 15:10:56 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 15:35:31 UTC</small>
       </div>
     </div>
   </div>

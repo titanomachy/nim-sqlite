@@ -75,6 +75,10 @@ proc preparedStatementCount(db: DbConn): int =
         result.inc
         statement = abi.sqlite3_next_stmt(db.unsafeHandle, statement)
 
+proc databaseConfigValue(db: DbConn, option: cint): cint =
+    check abi.sqlite3_db_config(db.unsafeHandle, option, -1, addr result) ==
+        abi.SQLITE_OK
+
 template expectPreparedCountUnchanged(db: DbConn, exceptionType: typedesc,
         body: untyped) =
     block:
@@ -1046,6 +1050,181 @@ test "cacheSize=0":
     discard db.all(SelectPersons)
     db.close()
 
+test "OpenOptions controls statement caching":
+    var options = defaultOpenOptions
+    options.cacheSize = 0
+    let uncached = openDatabase(":memory:", options)
+    try:
+        check uncached.preparedStatementCount == 0
+        discard uncached.value("SELECT 1")
+        check uncached.preparedStatementCount == 0
+    finally:
+        uncached.close()
+
+    options.cacheSize = 1
+    let cached = openDatabase(":memory:", options)
+    try:
+        check cached.preparedStatementCount == 1
+        discard cached.value("SELECT 1")
+        check cached.preparedStatementCount == 1
+    finally:
+        cached.close()
+
+test "OpenOptions distinguishes all database open modes":
+    let databasePath = getTempDir() / ("nim_sqlite_open_modes_" &
+        $getCurrentProcessId() & "_" & $epochTime() & ".sqlite")
+    var options = defaultOpenOptions
+    options.cacheSize = 0
+    try:
+        options.mode = OpenMode.readOnly
+        expect SqliteError:
+            discard openDatabase(databasePath, options)
+        check not fileExists(databasePath)
+
+        options.mode = OpenMode.readWriteExisting
+        expect SqliteError:
+            discard openDatabase(databasePath, options)
+        check not fileExists(databasePath)
+
+        options.mode = OpenMode.readWriteCreate
+        let created = openDatabase(databasePath, options)
+        created.exec("CREATE TABLE Item(value INTEGER)")
+        created.close()
+        check fileExists(databasePath)
+
+        options.mode = OpenMode.readWriteExisting
+        let existing = openDatabase(databasePath, options)
+        existing.exec("INSERT INTO Item(value) VALUES(1)")
+        existing.close()
+
+        options.mode = OpenMode.readOnly
+        let readonly = openDatabase(databasePath, options)
+        try:
+            check readonly.isReadonly
+            check readonly.value("SELECT COUNT(*) FROM Item").get.intVal == 1
+            expect SqliteError:
+                readonly.exec("INSERT INTO Item(value) VALUES(2)")
+        finally:
+            readonly.close()
+    finally:
+        if fileExists(databasePath):
+            removeFile(databasePath)
+
+test "OpenOptions busy timeout is installed and reports lock contention":
+    let databasePath = getTempDir() / ("nim_sqlite_busy_timeout_" &
+        $getCurrentProcessId() & "_" & $epochTime() & ".sqlite")
+    var first, second: DbConn
+    var options = defaultOpenOptions
+    options.cacheSize = 0
+    options.busyTimeoutMs = 25
+    try:
+        first = openDatabase(databasePath, options)
+        second = openDatabase(databasePath, options)
+        check second.value("PRAGMA busy_timeout").get.intVal == 25
+        first.exec("CREATE TABLE Item(value INTEGER)")
+        first.exec("BEGIN IMMEDIATE")
+        var raised = false
+        try:
+            second.exec("INSERT INTO Item(value) VALUES(1)")
+        except SqliteError as error:
+            raised = true
+            check error.primaryCode == int32(abi.SQLITE_BUSY)
+            check error.operation == SqliteOperation.execute
+        check raised
+        first.exec("ROLLBACK")
+    finally:
+        second.close()
+        first.close()
+        if fileExists(databasePath):
+            removeFile(databasePath)
+
+test "OpenOptions URI filenames support shared in-memory databases":
+    let databaseUri = "file:nim_sqlite_uri_" & $getCurrentProcessId() &
+        "?mode=memory&cache=shared"
+    var options = defaultOpenOptions
+    options.cacheSize = 0
+    options.uriFilename = true
+    let first = openDatabase(databaseUri, options)
+    let second = openDatabase(databaseUri, options)
+    try:
+        first.exec("CREATE TABLE Item(value INTEGER)")
+        first.exec("INSERT INTO Item(value) VALUES(1)")
+        check second.value("SELECT value FROM Item").get.intVal == 1
+    finally:
+        second.close()
+        first.close()
+
+when not defined(windows):
+    test "OpenOptions noFollow rejects symbolic-link database paths":
+        let suffix = $getCurrentProcessId() & "_" & $epochTime()
+        let databasePath = getTempDir() / ("nim_sqlite_nofollow_" & suffix &
+            ".sqlite")
+        let linkPath = getTempDir() / ("nim_sqlite_nofollow_link_" & suffix &
+            ".sqlite")
+        var options = defaultOpenOptions
+        options.cacheSize = 0
+        try:
+            let created = openDatabase(databasePath, options)
+            created.close()
+            createSymlink(databasePath, linkPath)
+
+            options.mode = OpenMode.readOnly
+            let followed = openDatabase(linkPath, options)
+            followed.close()
+
+            options.noFollow = true
+            var raised = false
+            try:
+                discard openDatabase(linkPath, options)
+            except SqliteError as error:
+                raised = true
+                check error.primaryCode == int32(abi.SQLITE_CANTOPEN)
+                check error.operation == SqliteOperation.openDatabase
+            check raised
+        finally:
+            if symlinkExists(linkPath):
+                removeFile(linkPath)
+            if fileExists(databasePath):
+                removeFile(databasePath)
+
+test "OpenOptions hardened profile configures SQLite defenses":
+    var normalOptions = defaultOpenOptions
+    normalOptions.cacheSize = 0
+    let normal = openDatabase(":memory:", normalOptions)
+    try:
+        check normal.databaseConfigValue(abi.SQLITE_DBCONFIG_DEFENSIVE) == 0
+        check normal.databaseConfigValue(abi.SQLITE_DBCONFIG_TRUSTED_SCHEMA) == 1
+    finally:
+        normal.close()
+
+    var hardenedOptions = normalOptions
+    hardenedOptions.securityProfile = SecurityProfile.hardened
+    let hardened = openDatabase(":memory:", hardenedOptions)
+    try:
+        check hardened.databaseConfigValue(abi.SQLITE_DBCONFIG_DEFENSIVE) == 1
+        check hardened.databaseConfigValue(abi.SQLITE_DBCONFIG_TRUSTED_SCHEMA) == 0
+        hardened.exec("PRAGMA writable_schema = ON")
+        check hardened.value("PRAGMA writable_schema").get.intVal == 0
+    finally:
+        hardened.close()
+
+test "OpenOptions rejects busy timeouts outside SQLite range":
+    for invalidTimeout in [-1'i64, int64(high(cint)) + 1]:
+        var options = defaultOpenOptions
+        options.busyTimeoutMs = invalidTimeout
+        let memoryBefore = abi.sqlite3_memory_used()
+        var raised = false
+        try:
+            discard openDatabase(":memory:", options)
+        except SqliteError as error:
+            raised = true
+            check error.msg == "Busy timeout is out of range for SQLite."
+            check error.operation == SqliteOperation.validation
+            check error.primaryCode == int32(abi.SQLITE_OK)
+            check error.extendedCode == int32(abi.SQLITE_OK)
+        check raised
+        check abi.sqlite3_memory_used() == memoryBefore
+
 test "db binding failure releases uncached statements":
     let db = openDatabase(":memory:", cacheSize = 0)
     try:
@@ -1083,6 +1262,12 @@ test "openDatabase rejects embedded NUL bytes":
         if opened.isOpen:
             opened.close()
         check not opened.isOpen
+
+    var options = defaultOpenOptions
+    var opened: DbConn
+    expectSqliteErrorMessage "Database path contains an embedded NUL byte.":
+        opened = openDatabase(":memory:\0ignored", options)
+    check not opened.isOpen
 
 test "ResultRow":
     withDb:

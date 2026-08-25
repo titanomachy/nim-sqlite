@@ -20,6 +20,32 @@ embedded NUL bytes raise ``SqliteError`` before they are passed to SQLite.
     # ... (do something with `db`)
     db.close()
 
+The compatibility overload opens or creates the database, uses a 100-entry statement cache, and keeps SQLite's
+normal connection settings. For explicit opening behavior, copy ``defaultOpenOptions`` and pass the resulting
+``OpenOptions`` value:
+
+.. code-block:: nim
+
+    var options = defaultOpenOptions
+    options.mode = OpenMode.readWriteExisting
+    options.cacheSize = 50
+    options.busyTimeoutMs = 5_000
+    options.noFollow = true
+    options.securityProfile = SecurityProfile.hardened
+    let db = openDatabase("path/to/existing.db", options)
+
+``OpenMode.readOnly`` and ``OpenMode.readWriteExisting`` never create the main database file;
+``OpenMode.readWriteCreate`` creates it when missing. SQLite may fall back from read-write-existing to read-only
+access when operating-system permissions require it, so use ``isReadonly`` when writable access is mandatory.
+``busyTimeoutMs`` gives ordinary lock contention a bounded retry period. ``uriFilename`` enables intentional SQLite
+``file:`` URI interpretation, including URI parameters that can affect access and locking. ``noFollow`` rejects
+database paths containing symbolic links.
+
+``SecurityProfile.hardened`` enables SQLite defensive mode and disables trusted-schema behavior before initialization
+SQL runs. This can reject legitimate schemas that rely on application-defined functions or virtual tables. It is an
+additional defense rather than a sandbox, and it does not change WAL or durability policy. See ``SAFETY.md`` for the
+complete connection-opening and security contract.
+
 Executing SQL
 #############
 

@@ -14,6 +14,7 @@ This changelog covers changes made after version 0.2.0.
 - Add `TransactionMode.deferred`, `TransactionMode.immediate`, and `TransactionMode.exclusive` for outermost transactions.
 - Add structured `SqliteError` metadata with primary and extended SQLite result codes, a stable `SqliteOperation` category, and SQLite's diagnostic message.
 - Add the catchable `SqliteUsageError` for invalid connection and statement lifecycle state.
+- Add `OpenOptions` with separate read-only, read-write-existing, and read-write-create modes, statement-cache sizing, a busy timeout, URI filename interpretation, symbolic-link rejection, and normal or hardened security profiles.
 
 ### Changed
 
@@ -21,6 +22,7 @@ This changelog covers changes made after version 0.2.0.
 - Treat `transaction` inside a manually started SQL transaction as a savepoint scope without taking ownership of the outer transaction.
 - **Breaking:** Report public lifecycle misuse with `SqliteUsageError` instead of `AssertionDefect`.
 - Keep SQL text and bound parameter values out of exception fields and messages, including rejected numeric values; library-side validation errors use zero result codes and an empty SQLite message.
+- Preserve the convenience `openDatabase` overload and its create-if-missing, 100-entry-cache defaults while routing it through the explicit options implementation.
 
 ## [0.4.0] - 2026-08-25
 
