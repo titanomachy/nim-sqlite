@@ -10,7 +10,7 @@ path to the database file as an argument. If the file doesn't exist, it will be 
 be created by using the special path `":memory:"` as an argument. Once the database connection is no longer needed,
 `close <#close,DbConn>`_ must be called to prevent memory leaks. Closing a connection finalizes its internally cached
 statements. Explicit statements created with ``stmt`` own their handles and must be finalized separately. Closing is
-rejected with ``AssertionDefect`` while a connection operation is active, preventing callbacks and user-defined
+rejected with ``SqliteUsageError`` while a connection operation is active, preventing callbacks and user-defined
 conversions from invalidating a statement that is being bound or executed. Database and extension paths containing
 embedded NUL bytes raise ``SqliteError`` before they are passed to SQLite.
 
@@ -232,8 +232,24 @@ same SQL is used with different parameters.
 
 Explicit statements created with ``stmt`` are single-use for their complete binding and execution lifecycle. Reusing
 or finalizing the same statement, or closing its connection, from an active iterator or a user-defined named-parameter
-``toDb`` conversion raises ``AssertionDefect``. The guard is released after successful execution, binding failures,
+``toDb`` conversion raises ``SqliteUsageError``. The guard is released after successful execution, binding failures,
 exceptions, and iterator early exits, so the statement remains reusable afterward.
+
+Error handling
+##############
+
+``SqliteError`` provides ``primaryCode``, ``extendedCode``, ``operation``, and ``sqliteMessage`` fields for handling
+failures without parsing exception text. The operation is one of the stable ``SqliteOperation`` categories. SQLite
+result codes are captured before statement cleanup can replace the connection's current error. Library validation
+and conversion failures have zero result codes and an empty ``sqliteMessage``.
+
+``SqliteUsageError`` is the catchable error for invalid public handle state, including use of a closed connection,
+use of a finalized statement, reentrant use of an active explicit statement, and close or finalize during an active
+operation. Internal invariant failures remain defects.
+
+Neither exception type attaches SQL text or bound parameter values. SQLite's own message can identify schema objects
+or SQL tokens, so applications should apply their normal protection policy to logs and should bind secrets rather
+than placing them in SQL literals.
 
 Supported types
 ###############

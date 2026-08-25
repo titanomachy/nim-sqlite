@@ -26,6 +26,29 @@ Built-in `fromDb` conversions validate the SQLite storage class before reading a
 
 The `changes` operation uses SQLite's 64-bit changes API and returns `int64`.
 
+## Error handling and sensitive data
+
+`SqliteError` exposes stable machine-readable fields:
+
+- `primaryCode` is SQLite's primary result code.
+- `extendedCode` distinguishes cases such as unique and foreign-key constraints.
+- `operation` is a `SqliteOperation` category describing where the failure occurred.
+- `sqliteMessage` is SQLite's own diagnostic message.
+
+For errors produced by library-side validation or conversion, both result codes are
+`SQLITE_OK` (zero) and `sqliteMessage` is empty. The ordinary exception `msg`
+remains suitable for logs and human-readable diagnostics.
+
+The library does not attach SQL text or bound parameter values to exceptions.
+SQLite's own diagnostic can identify schema objects or SQL tokens, so applications
+should still apply their normal policy for protecting logs. In particular, avoid
+putting secrets in SQL literals; bind them as parameters.
+
+Invalid public handle state raises the catchable `SqliteUsageError`. This includes
+using a closed connection, using a finalized statement, reusing an active explicit
+statement, and closing or finalizing a handle during one of its active operations.
+Internal invariant failures remain defects.
+
 ## Connection and statement lifecycles
 
 A database connection must be closed when no longer needed. Closing finalizes statements held by its internal cache.
@@ -40,7 +63,8 @@ Active operations are guarded against destructive reentrancy:
 
 The connection-level statement cache leases a cached statement to one operation at a time. Reentrant use of the same SQL receives an independent temporary statement, and cache eviction skips leased or busy statements.
 
-Invalid lifecycle use is treated as a programming error and rejected with `AssertionDefect`. SQLite operational failures are reported as `SqliteError`.
+Invalid lifecycle use is reported as `SqliteUsageError`. SQLite operational and
+library validation failures are reported as `SqliteError`.
 
 ## Execution and transaction failures
 
@@ -60,7 +84,11 @@ Preparation, binding, decoding, parsing, and execution failures clean up or rese
 
 ## Verification
 
-The test suite includes focused failure-path checks for connection and statement lifecycles, reentrant conversions, parser failures, range errors, row-producing execution errors, nested savepoints, transaction modes, cleanup, and rollback behavior.
+The test suite includes focused failure-path checks for structured primary and
+extended result codes, error categories, sensitive bound values, connection and
+statement lifecycles, reentrant conversions, parser failures, range errors,
+row-producing execution errors, nested savepoints, transaction modes, cleanup,
+and rollback behavior.
 
 CI exercises:
 

@@ -12,11 +12,15 @@ This changelog covers changes made after version 0.2.0.
 
 - Add savepoint-backed nested `transaction` blocks so caught inner failures roll back only their own work.
 - Add `TransactionMode.deferred`, `TransactionMode.immediate`, and `TransactionMode.exclusive` for outermost transactions.
+- Add structured `SqliteError` metadata with primary and extended SQLite result codes, a stable `SqliteOperation` category, and SQLite's diagnostic message.
+- Add the catchable `SqliteUsageError` for invalid connection and statement lifecycle state.
 
 ### Changed
 
 - Recover from commit and savepoint-release failures with rollback cleanup, preserving the original exception and exposing secondary cleanup failures through its `parent` chain.
 - Treat `transaction` inside a manually started SQL transaction as a savepoint scope without taking ownership of the outer transaction.
+- **Breaking:** Report public lifecycle misuse with `SqliteUsageError` instead of `AssertionDefect`.
+- Keep SQL text and bound parameter values out of exception fields and messages, including rejected numeric values; library-side validation errors use zero result codes and an empty SQLite message.
 
 ## [0.4.0] - 2026-08-25
 

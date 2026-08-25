@@ -60,6 +60,31 @@ Grace: none(int)
 
 Close each database when you finish with it. A `try`/`finally` block is a convenient way to make cleanup unconditional.
 
+## Handling errors
+
+SQLite and validation failures raise `SqliteError`. Its `primaryCode`,
+`extendedCode`, `operation`, and `sqliteMessage` fields allow handling failures
+without parsing exception text. Extended codes distinguish cases such as unique
+and foreign-key constraint failures:
+
+```nim
+from nim_sqlite/sqlite3_abi as sqlite import nil
+
+db.exec("CREATE UNIQUE INDEX person_name ON person(name)")
+try:
+  db.exec("INSERT INTO person(name) VALUES(?)", "Ada")
+except SqliteError as error:
+  if error.extendedCode == int32(sqlite.SQLITE_CONSTRAINT_UNIQUE):
+    echo "name already exists"
+  else:
+    raise
+```
+
+Invalid handle state, such as using a closed connection or finalized statement,
+raises the catchable `SqliteUsageError`. `nim-sqlite` never attaches bound
+parameter values or the submitted SQL text to exceptions. See
+[Safety and hardening](SAFETY.md) for the complete error and logging contract.
+
 ## Binding values
 
 Pass Nim values after the SQL string to bind positional `?` parameters:

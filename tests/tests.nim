@@ -191,7 +191,7 @@ test "db close is rejected during named parameter conversion":
         try:
             check db.value("SELECT :value", (value: toDb(26),)).get.intVal == 26
             let statementsBefore = db.preparedStatementCount
-            expectPreparedCountUnchanged(db, AssertionDefect):
+            expectPreparedCountUnchanged(db, SqliteUsageError):
                 discard db.value("SELECT :value", (value: ClosingParam(db: db),))
 
             check db.isOpen
@@ -221,7 +221,7 @@ test "db.iterate close":
         # Warm the cache so the failure must return the existing statement
         # lease rather than legitimately adding its first cached handle.
         discard db.all(SelectPersons)
-        expectPreparedCountUnchanged(db, AssertionDefect):
+        expectPreparedCountUnchanged(db, SqliteUsageError):
             for row in db.iterate(SelectPersons):
                 db.close()
 
@@ -812,13 +812,13 @@ test "db.isInTransaction":
 test "db.isOpen":
     var db: DbConn
     check not db.isOpen
-    expect AssertionDefect:
+    expect SqliteUsageError:
         discard db.all(SelectPersons)
     db = openDatabase(":memory:")
     check db.isOpen
     db.close()
     check not db.isOpen
-    expect AssertionDefect:
+    expect SqliteUsageError:
         discard db.all(SelectPersons)
 
 test "raw SQLite ABI access":
@@ -826,6 +826,11 @@ test "raw SQLite ABI access":
         let handle: ptr abi.sqlite3 = db.unsafeHandle
         check not handle.isNil
         check abi.sqlite3_get_autocommit(handle) == 1
+
+    let closedDb = openDatabase(":memory:")
+    closedDb.close()
+    expect SqliteUsageError:
+        discard closedDb.unsafeHandle
 
 test "db.isReadonly":
     withDb:
@@ -845,7 +850,7 @@ test "db.close with owned explicit statements":
     let stmt = db.stmt(SelectPersons)
     db.close()
     check not stmt.isAlive
-    expect AssertionDefect:
+    expect SqliteUsageError:
         discard stmt.all()
     # The explicit statement still owns its SQLite handle after the logical
     # connection close and must remain safe to finalize.
@@ -878,7 +883,7 @@ when not defined(macosx):
 test "db.loadExtension on closed connection":
     let db = openDatabase(":memory:")
     db.close()
-    expect AssertionDefect:
+    expect SqliteUsageError:
         db.loadExtension("invalid extension path")
 
 test "row.unpack":
@@ -962,13 +967,13 @@ test "stmt.iterate busy":
         let stmt = db.stmt(SelectPersons)
         try:
             for row in stmt.iterate():
-                expectPreparedCountUnchanged(db, AssertionDefect):
+                expectPreparedCountUnchanged(db, SqliteUsageError):
                     discard stmt.all()
-                expectPreparedCountUnchanged(db, AssertionDefect):
+                expectPreparedCountUnchanged(db, SqliteUsageError):
                     discard stmt.one()
-                expectPreparedCountUnchanged(db, AssertionDefect):
+                expectPreparedCountUnchanged(db, SqliteUsageError):
                     discard stmt.value()
-                expectPreparedCountUnchanged(db, AssertionDefect):
+                expectPreparedCountUnchanged(db, SqliteUsageError):
                     stmt.exec()
         finally:
             stmt.finalize()
@@ -976,14 +981,14 @@ test "stmt.iterate busy":
 test "stmt.iterate close/finalize":
     withDb:
         let stmt = db.stmt(SelectPersons)
-        expectPreparedCountUnchanged(db, AssertionDefect):
+        expectPreparedCountUnchanged(db, SqliteUsageError):
             for row in stmt.iterate():
                 db.close()
         stmt.finalize()
     withDb:
         let stmt = db.stmt(SelectPersons)
         try:
-            expectPreparedCountUnchanged(db, AssertionDefect):
+            expectPreparedCountUnchanged(db, SqliteUsageError):
                 for row in stmt.iterate():
                     stmt.finalize()
         finally:
@@ -993,17 +998,17 @@ test "stmt lifecycle changes are rejected during named parameter conversion":
     withDb:
         let stmt = db.stmt("SELECT :value")
 
-        expectPreparedCountUnchanged(db, AssertionDefect):
+        expectPreparedCountUnchanged(db, SqliteUsageError):
             discard stmt.value((value: ClosingParam(db: db),))
         check db.isOpen
         check stmt.isAlive
 
-        expectPreparedCountUnchanged(db, AssertionDefect):
+        expectPreparedCountUnchanged(db, SqliteUsageError):
             discard stmt.value((value: StatementLifecycleParam(
                 statement: stmt, action: finalizeStatement),))
         check stmt.isAlive
 
-        expectPreparedCountUnchanged(db, AssertionDefect):
+        expectPreparedCountUnchanged(db, SqliteUsageError):
             discard stmt.value((value: StatementLifecycleParam(
                 statement: stmt, action: reuseStatement),))
         check stmt.isAlive
@@ -1015,13 +1020,13 @@ test "stmt.isAlive":
     withDb:
         var stmt: SqlStatement
         check not stmt.isAlive
-        expect AssertionDefect:
+        expect SqliteUsageError:
             discard stmt.all()
         stmt = db.stmt(SelectPersons)
         check stmt.isAlive
         stmt.finalize()
         check not stmt.isAlive
-        expect AssertionDefect:
+        expect SqliteUsageError:
             discard stmt.all()
 
 test "stmt.finalize twice":
@@ -1095,15 +1100,81 @@ test "ResultRow":
 
 test "SqliteError":
     withDb:
-        expect SqliteError:
+        var duplicateTableRaised = false
+        try:
             db.execScript("""
                 CREATE TABLE Person(
                     name TEXT,
                     age INTEGER
                 );
             """)
-        expect SqliteError:
+        except SqliteError as error:
+            duplicateTableRaised = true
+            check error.primaryCode == int32(abi.SQLITE_ERROR)
+            check error.extendedCode == int32(abi.SQLITE_ERROR)
+            check error.operation == SqliteOperation.prepare
+            check error.sqliteMessage.len > 0
+            check error.msg == "sqlite error: " & error.sqliteMessage
+        check duplicateTableRaised
+
+        var openRaised = false
+        try:
             discard openDatabase("some/made/up/path", dbRead)
+        except SqliteError as error:
+            openRaised = true
+            check error.primaryCode == int32(abi.SQLITE_CANTOPEN)
+            check (error.extendedCode and 0xff) == int32(abi.SQLITE_CANTOPEN)
+            check error.operation == SqliteOperation.openDatabase
+            check error.sqliteMessage.len > 0
+        check openRaised
+
+test "SqliteError distinguishes extended result codes without bound values":
+    withDb:
+        const secret = "phase-2.2-bound-secret"
+        db.exec("CREATE TABLE StructuredError(value TEXT UNIQUE)")
+        db.exec("INSERT INTO StructuredError(value) VALUES(?)", secret)
+
+        var raised = false
+        try:
+            db.exec("INSERT INTO StructuredError(value) VALUES(?)", secret)
+        except SqliteError as error:
+            raised = true
+            check error.primaryCode == int32(abi.SQLITE_CONSTRAINT)
+            check error.extendedCode == int32(abi.SQLITE_CONSTRAINT_UNIQUE)
+            check error.operation == SqliteOperation.execute
+            check error.sqliteMessage.len > 0
+            check secret notin error.msg
+            check secret notin error.sqliteMessage
+        check raised
+
+test "query errors capture SQLite state before statement cleanup":
+    withDb:
+        let preparedBefore = db.preparedStatementCount
+        var raised = false
+        try:
+            discard db.all(LateRowErrorNamed, (fail: 1,))
+        except SqliteError as error:
+            raised = true
+            check error.primaryCode == int32(abi.SQLITE_ERROR)
+            check error.extendedCode == int32(abi.SQLITE_ERROR)
+            check error.operation == SqliteOperation.execute
+            check error.sqliteMessage.len > 0
+        check raised
+        check db.preparedStatementCount == preparedBefore + 1
+        check db.value("SELECT 1").get.intVal == 1
+
+test "library validation errors have structured categories without SQLite state":
+    withDb:
+        var raised = false
+        try:
+            db.exec("SELECT ?")
+        except SqliteError as error:
+            raised = true
+            check error.primaryCode == int32(abi.SQLITE_OK)
+            check error.extendedCode == int32(abi.SQLITE_OK)
+            check error.operation == SqliteOperation.binding
+            check error.sqliteMessage.len == 0
+        check raised
 
 test "Type mappings":
     withDb:
@@ -1123,9 +1194,18 @@ test "Type mappings":
 
 test "toDb rejects ordinals outside SQLite INTEGER range":
     check toDb(uint64(high(int64))).intVal == high(int64)
-    expectSqliteErrorMessage(
-            "Integer value " & $high(uint64) & " is out of range for SQLite INTEGER."):
+    var raised = false
+    try:
         discard toDb(high(uint64))
+    except SqliteError as error:
+        raised = true
+        check error.msg == "Integer value is out of range for SQLite INTEGER."
+        check $high(uint64) notin error.msg
+        check error.primaryCode == int32(abi.SQLITE_OK)
+        check error.extendedCode == int32(abi.SQLITE_OK)
+        check error.operation == SqliteOperation.conversion
+        check error.sqliteMessage.len == 0
+    check raised
     expect SqliteError:
         discard toDb(WideUnsignedRange(high(uint64)))
 
@@ -1298,5 +1378,12 @@ test "Foreign keys":
         db.exec("PRAGMA foreign_keys = ON;")
         db.exec("INSERT INTO ForeignKey(personId) VALUES(NULL)")
         db.exec("INSERT INTO ForeignKey(personId) VALUES(1)")
-        expect SqliteError:
+        var raised = false
+        try:
             db.exec("INSERT INTO ForeignKey(personId) VALUES(100)")
+        except SqliteError as error:
+            raised = true
+            check error.primaryCode == int32(abi.SQLITE_CONSTRAINT)
+            check error.extendedCode == int32(abi.SQLITE_CONSTRAINT_FOREIGNKEY)
+            check error.operation == SqliteOperation.execute
+        check raised
