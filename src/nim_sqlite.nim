@@ -219,6 +219,17 @@ template checkOk(db: DbConn, rc: Rc, operation: SqliteOperation) =
     if rc != abi.SQLITE_OK:
         raise newSqliteError(db, operation, rc)
 
+proc configureBoolean(db: DbConn, option: cint, enabled: bool,
+        operation: SqliteOperation) =
+    let requested = if enabled: 1.cint else: 0.cint
+    var configured: cint
+    let rc = abi.sqlite3_db_config(db.handle, option, requested, addr configured)
+    db.checkOk(rc, operation)
+    if configured != requested:
+        raise newSqliteError(
+            "SQLite did not apply the requested database configuration.",
+            operation)
+
 proc resetStmt(stmtHandle: ptr abi.sqlite3_stmt) =
     discard abi.sqlite3_reset(stmtHandle)
     discard abi.sqlite3_clear_bindings(stmtHandle)
@@ -436,6 +447,56 @@ proc validateCompleteSql(sql: string) =
     if abi.sqlite3_complete(terminatedSql.cstring) == 0:
         raise newSqliteError("sqlite error: incomplete SQL input",
             SqliteOperation.validation)
+
+proc leadingSqlKeyword(sql: cstring): string =
+    ## Returns the first ASCII keyword after SQLite whitespace and comments.
+    ## The input has already passed ``validateCompleteSql``, so block comments
+    ## are known to be terminated.
+    if sql.isNil:
+        return
+
+    var idx = 0
+    while sql[idx] != '\0':
+        let character = sql[idx]
+        if character == ' ' or ord(character) in 9 .. 13:
+            idx.inc
+        elif ord(character) == 0xef and ord(sql[idx + 1]) == 0xbb and
+                ord(sql[idx + 2]) == 0xbf:
+            # SQLite treats a UTF-8 byte-order mark as whitespace.
+            idx.inc 3
+        elif character == '-' and sql[idx + 1] == '-':
+            idx.inc 2
+            while sql[idx] != '\0' and sql[idx] notin {'\r', '\n'}:
+                idx.inc
+        elif character == '/' and sql[idx + 1] == '*':
+            idx.inc 2
+            while sql[idx] != '\0':
+                if sql[idx] == '*' and sql[idx + 1] == '/':
+                    idx.inc 2
+                    break
+                idx.inc
+        else:
+            break
+
+    let start = idx
+    while sql[idx] in {'A' .. 'Z', 'a' .. 'z'}:
+        idx.inc
+    result = newString(idx - start)
+    for resultIdx in 0 ..< result.len:
+        let character = sql[start + resultIdx]
+        result[resultIdx] = if character in {'a' .. 'z'}:
+                chr(ord(character) - ord('a') + ord('A'))
+            else:
+                character
+
+proc rejectTransactionControl(stmtHandle: ptr abi.sqlite3_stmt) =
+    case leadingSqlKeyword(abi.sqlite3_sql(stmtHandle))
+    of "BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE":
+        raise newSqliteError(
+            "Transaction-control statements are not allowed in execScript.",
+            SqliteOperation.validation)
+    else:
+        discard
 
 proc containsSqlStatement(db: DbConn, sql: cstring): bool =
     var remaining = sql
@@ -669,7 +730,18 @@ proc attachSecondaryException(primary, secondary: ref Exception) =
     ## a cleanup failure through Nim's standard exception-parent chain.
     if secondary.isNil or secondary == primary:
         return
-    secondary.parent = primary.parent
+    let previousParent = primary.parent
+    var secondaryTail = secondary
+    while not secondaryTail.parent.isNil and secondaryTail.parent != primary:
+        secondaryTail = secondaryTail.parent
+    # Nim normally links an exception raised during cleanup back to the
+    # exception currently being handled. Remove that back-edge before making
+    # the cleanup chain the primary exception's parent, while retaining every
+    # cleanup failure already linked ahead of it.
+    if secondaryTail.parent == primary:
+        secondaryTail.parent = previousParent
+    elif secondaryTail != previousParent:
+        secondaryTail.parent = previousParent
     primary.parent = secondary
 
 proc nextSavepoint(db: DbConn): string =
@@ -787,7 +859,9 @@ proc execScript*(db: DbConn, sql: string) =
     ## Each statement is stepped until completion, with result rows discarded.
     ## The statements are executed inside a transaction. Empty, semicolon-only,
     ## and comment-only scripts are no-ops; incomplete or invalid input raises
-    ## ``SqliteError``. Embedded NUL bytes also raise ``SqliteError``.
+    ## ``SqliteError``. Embedded NUL bytes and transaction-control statements
+    ## also raise ``SqliteError``. Rejecting transaction control prevents a
+    ## script from committing or rolling back the transaction that protects it.
     db.beginOperation()
     try:
         validateCompleteSql(sql)
@@ -801,6 +875,7 @@ proc execScript*(db: DbConn, sql: string) =
                         addr stmtHandle, addr tail)
                     db.checkOk(rc, SqliteOperation.prepare)
                     if not stmtHandle.isNil:
+                        rejectTransactionControl(stmtHandle)
                         db.executeToCompletion(stmtHandle)
                 finally:
                     if not stmtHandle.isNil:
@@ -1159,13 +1234,11 @@ proc openDatabase*(path: string, options: OpenOptions): DbConn =
             abi.sqlite3_busy_timeout(db.handle, cint(options.busyTimeoutMs)),
             SqliteOperation.openDatabase)
         if options.securityProfile == SecurityProfile.hardened:
-            result.checkOk(
-                abi.sqlite3_db_config(db.handle,
-                    abi.SQLITE_DBCONFIG_DEFENSIVE, 1, 0),
+            result.configureBoolean(
+                abi.SQLITE_DBCONFIG_DEFENSIVE, true,
                 SqliteOperation.openDatabase)
-            result.checkOk(
-                abi.sqlite3_db_config(db.handle,
-                    abi.SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0, 0),
+            result.configureBoolean(
+                abi.SQLITE_DBCONFIG_TRUSTED_SCHEMA, false,
                 SqliteOperation.openDatabase)
 
         result.exec("PRAGMA encoding = 'UTF-8'")
@@ -1208,9 +1281,8 @@ proc loadExtension*(db: DbConn, path: string) =
     ## Load an SQLite extension. Will raise a ``SqliteError`` exception if loading fails.
     assertCanUseDb db
     rejectEmbeddedNul(path, "Extension path")
-    db.checkOk(
-        abi.sqlite3_db_config(db.handle,
-            abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, 0),
+    db.configureBoolean(
+        abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, true,
         SqliteOperation.loadExtension)
     var err: cstring
     let rc = abi.sqlite3_load_extension(db.handle, path.cstring, nil, addr err)

@@ -24,6 +24,12 @@ This changelog covers changes made after version 0.2.0.
 - Keep SQL text and bound parameter values out of exception fields and messages, including rejected numeric values; library-side validation errors use zero result codes and an empty SQLite message.
 - Preserve the convenience `openDatabase` overload and its create-if-missing, 100-entry-cache defaults while routing it through the explicit options implementation.
 
+### Fixed
+
+- Reject transaction-control statements in `execScript` before they can commit or roll back its managed transaction, preserving all-or-nothing behavior both standalone and inside a caller-owned transaction.
+- Pass ABI-correct `cint` and output-pointer arguments to SQLite's variadic database-configuration API and verify that requested boolean settings take effect.
+- Preserve the complete exception `parent` chain when both scoped rollback and fallback rollback cleanup fail.
+
 ## [0.4.0] - 2026-08-25
 
 ### Added

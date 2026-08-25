@@ -14,7 +14,7 @@ Operations intended for one statement validate the complete SQL input before exe
 - A second statement, malformed trailing SQL, or an incomplete quoted token or block comment raises `SqliteError` before the first statement executes.
 - Empty, whitespace-only, semicolon-only, and comment-only input raises `SqliteError`.
 
-`execScript` is the explicit multi-statement API. Empty and comment-only scripts are no-ops.
+`execScript` is the explicit multi-statement API. Empty and comment-only scripts are no-ops. Explicit `BEGIN`, `COMMIT`, `END`, `ROLLBACK`, `SAVEPOINT`, and `RELEASE` statements are rejected so a script cannot escape or invalidate the transaction protecting its work. Use `exec` when transaction control must be managed manually.
 
 SQL text, database paths, and extension paths containing embedded NUL bytes are rejected before reaching SQLite. Embedded NUL bytes remain valid in bound `TEXT` and `BLOB` values.
 
@@ -89,6 +89,8 @@ intentionally use symlinked paths.
 
 `SecurityProfile.hardened` enables `SQLITE_DBCONFIG_DEFENSIVE` and disables
 `SQLITE_DBCONFIG_TRUSTED_SCHEMA` before the library executes initialization SQL.
+The library passes SQLite's exact C ABI types to these variadic configuration
+operations and verifies the effective setting reported by SQLite.
 This prevents ordinary SQL from enabling features intended to modify SQLite's
 internal schema representation and prevents non-innocuous application functions
 or virtual tables from being invoked indirectly by schema objects. It can reject
@@ -125,11 +127,11 @@ library validation failures are reported as `SqliteError`.
 
 Outermost transactions default to `TransactionMode.deferred`. `TransactionMode.immediate` and `TransactionMode.exclusive` select SQLite's corresponding `BEGIN` modes. A nested block always inherits the surrounding transaction's mode because SQLite savepoints do not acquire a separate transaction mode.
 
-If `COMMIT` or a nested `RELEASE` fails while SQLite still considers a transaction active, the library attempts rollback cleanup before propagating the original failure. A savepoint cleanup failure causes a full transaction rollback because the narrower boundary can no longer be trusted. If a cleanup attempt also fails, the original body, commit, or release exception remains the exception observed by the caller and the cleanup exception is attached through Nim's `error.parent` chain. A failure of the final full rollback can leave SQLite's transaction active; callers can inspect `isInTransaction` before deciding whether to retry rollback or discard the connection.
+If `COMMIT` or a nested `RELEASE` fails while SQLite still considers a transaction active, the library attempts rollback cleanup before propagating the original failure. A savepoint cleanup failure causes a full transaction rollback because the narrower boundary can no longer be trusted. If one or more cleanup attempts also fail, the original body, commit, or release exception remains the exception observed by the caller and every cleanup exception remains available through Nim's `error.parent` chain in failure order. A failure of the final full rollback can leave SQLite's transaction active; callers can inspect `isInTransaction` before deciding whether to retry rollback or discard the connection.
 
 Transactions and savepoints started manually with SQL remain owned by the caller. Entering `transaction` while SQLite is already in a transaction creates a savepoint; success releases that savepoint without committing the manual transaction, and ordinary failure rolls back only to that savepoint. The requested `TransactionMode` has no effect in this case. Do not manually commit, roll back, or release the active transaction/savepoint from inside a `transaction` block, because doing so invalidates the scope that the template must finish.
 
-`execMany` and `execScript` start an outer transaction when needed and use a savepoint when a transaction is already active. A failure aborts and rolls back their own work without silently committing partial changes into a surrounding scope.
+`execMany` and `execScript` start an outer transaction when needed and use a savepoint when a transaction is already active. A failure aborts and rolls back their own work without silently committing partial changes into a surrounding scope. `execScript` rejects explicit transaction-control statements before executing them because those statements could otherwise invalidate the managed transaction and make rollback impossible.
 
 Preparation, binding, decoding, parsing, and execution failures clean up or reset their statement handles so failed operations do not poison later queries.
 
@@ -139,8 +141,9 @@ The test suite includes focused failure-path checks for structured primary and
 extended result codes, error categories, sensitive bound values, connection and
 statement lifecycles, reentrant conversions, parser failures, range errors,
 open modes, busy lock contention, URI filenames, symbolic-link rejection,
-hardened connection settings, row-producing execution errors, nested savepoints,
-transaction modes, cleanup, and rollback behavior.
+hardened connection settings and ABI-safe configuration, row-producing execution
+errors, transaction-control rejection, nested savepoints, transaction modes,
+complete cleanup exception chains, and rollback behavior.
 
 CI exercises:
 

@@ -1,7 +1,7 @@
 # nim-sqlite
 
 [![CI](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml/badge.svg)](https://github.com/titanomachy/nim-sqlite/actions/workflows/main.yml)
-[![Coverage](https://titanomachy.github.io/nim-sqlite/coverage.svg)](https://github.com/titanomachy/nim-sqlite/actions)
+[![Code coverage](https://titanomachy.github.io/nim-sqlite/coverage.svg)](https://github.com/titanomachy/nim-sqlite/actions)
 
 [Documentation](https://titanomachy.github.io/nim-sqlite/) · [Examples](examples) · [Safety and hardening](SAFETY.md) · [MIT License](LICENSE)
 
@@ -137,6 +137,8 @@ db.exec(
 ```
 
 Use `execScript` for schema setup, migrations, and other multi-statement scripts.
+It rejects explicit transaction-control statements so the complete script remains
+inside its managed transaction; use `exec` to manage transactions manually.
 
 ## Reading rows
 

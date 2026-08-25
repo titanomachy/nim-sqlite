@@ -32,7 +32,8 @@ type
     DeniedSavepointOperation = enum
         denyNoSavepointOperation,
         denySavepointRollback,
-        denySavepointRelease
+        denySavepointRelease,
+        denyAllRollback
 
     TransactionAuthorizerState = object
         deniedOperation: DeniedSavepointOperation
@@ -42,7 +43,7 @@ proc transactionAuthorizer(userData: pointer, actionCode: cint,
     discard savepoint
     discard database
     discard trigger
-    if actionCode != abi.SQLITE_SAVEPOINT or operation.isNil:
+    if operation.isNil:
         return abi.SQLITE_OK
 
     let state = cast[ptr TransactionAuthorizerState](userData)
@@ -50,9 +51,21 @@ proc transactionAuthorizer(userData: pointer, actionCode: cint,
     of denyNoSavepointOperation:
         abi.SQLITE_OK
     of denySavepointRollback:
-        if $operation == "ROLLBACK": abi.SQLITE_DENY else: abi.SQLITE_OK
+        if actionCode == abi.SQLITE_SAVEPOINT and $operation == "ROLLBACK":
+            abi.SQLITE_DENY
+        else:
+            abi.SQLITE_OK
     of denySavepointRelease:
-        if $operation == "RELEASE": abi.SQLITE_DENY else: abi.SQLITE_OK
+        if actionCode == abi.SQLITE_SAVEPOINT and $operation == "RELEASE":
+            abi.SQLITE_DENY
+        else:
+            abi.SQLITE_OK
+    of denyAllRollback:
+        if $operation == "ROLLBACK" and actionCode in {
+                abi.SQLITE_SAVEPOINT, abi.SQLITE_TRANSACTION}:
+            abi.SQLITE_DENY
+        else:
+            abi.SQLITE_OK
 
 template expectSqliteErrorMessage(expectedMessage: string, body: untyped) =
     block:
@@ -76,7 +89,7 @@ proc preparedStatementCount(db: DbConn): int =
         statement = abi.sqlite3_next_stmt(db.unsafeHandle, statement)
 
 proc databaseConfigValue(db: DbConn, option: cint): cint =
-    check abi.sqlite3_db_config(db.unsafeHandle, option, -1, addr result) ==
+    check abi.sqlite3_db_config(db.unsafeHandle, option, cint(-1), addr result) ==
         abi.SQLITE_OK
 
 template expectPreparedCountUnchanged(db: DbConn, exceptionType: typedesc,
@@ -578,6 +591,51 @@ test "db.execScript with failure":
         let rows = db.all(SelectPersons)
         check rows.len == 2
 
+test "db.execScript rejects transaction control without committing partial work":
+    let db = openDatabase(":memory:", cacheSize = 0)
+    try:
+        db.exec("CREATE TABLE ExecutionLog(value INTEGER)")
+        for transactionSql in [
+            "\xEF\xBB\xBFbegin",
+            "/* leading comment */ COMMIT",
+            "-- leading comment\nEND",
+            "ROLLBACK",
+            "SAVEPOINT user_scope",
+            "RELEASE user_scope"
+        ]:
+            var raised = false
+            try:
+                db.execScript("INSERT INTO ExecutionLog VALUES(1); " &
+                    transactionSql & "; INSERT INTO ExecutionLog VALUES(2)")
+            except SqliteError as error:
+                raised = true
+                check error.msg ==
+                    "Transaction-control statements are not allowed in execScript."
+                check error.operation == SqliteOperation.validation
+                check error.primaryCode == int32(abi.SQLITE_OK)
+            check raised
+            check not db.isInTransaction
+            check db.value("SELECT COUNT(*) FROM ExecutionLog").get.intVal == 0
+    finally:
+        db.close()
+
+test "db.execScript transaction-control rejection preserves a manual transaction":
+    withDb:
+        db.exec("BEGIN")
+        db.exec("INSERT INTO Person(name, age) VALUES('Manual', 40)")
+        expect SqliteError:
+            db.execScript("""
+                INSERT INTO Person(name, age) VALUES('Script', 41);
+                COMMIT;
+                INSERT INTO Person(name, age) VALUES('After', 42);
+            """)
+
+        check db.isInTransaction
+        check db.value("SELECT COUNT(*) FROM Person WHERE name = 'Manual'").get.intVal == 1
+        check db.value("SELECT COUNT(*) FROM Person WHERE name = 'Script'").get.intVal == 0
+        check db.value("SELECT COUNT(*) FROM Person WHERE name = 'After'").get.intVal == 0
+        db.exec("ROLLBACK")
+
 test "db.execScript reports errors after the first result row":
     let db = openDatabase(":memory:", cacheSize = 0)
     try:
@@ -782,6 +840,37 @@ test "db.transaction exposes rollback cleanup failures":
         check not db.isInTransaction
         check db.value("SELECT COUNT(*) FROM Person WHERE name = 'Nested'").get.intVal == 0
 
+test "db.transaction preserves every rollback cleanup failure":
+    withDb:
+        var state = TransactionAuthorizerState(
+            deniedOperation: denyNoSavepointOperation)
+        db.exec("BEGIN")
+        check abi.sqlite3_set_authorizer(db.unsafeHandle,
+            transactionAuthorizer, addr state) == abi.SQLITE_OK
+        try:
+            var caught = false
+            try:
+                db.transaction:
+                    db.exec("INSERT INTO Person(name, age) VALUES('Nested', 41)")
+                    state.deniedOperation = denyAllRollback
+                    raise newException(ValueError, "body failure")
+            except ValueError as error:
+                caught = true
+                check error.msg == "body failure"
+                check not error.parent.isNil
+                check error.parent of SqliteError
+                check not error.parent.parent.isNil
+                check error.parent.parent of SqliteError
+                check error.parent.parent.parent.isNil
+            check caught
+            check db.isInTransaction
+        finally:
+            discard abi.sqlite3_set_authorizer(db.unsafeHandle, nil, nil)
+            if db.isInTransaction:
+                db.exec("ROLLBACK")
+
+        check db.value("SELECT COUNT(*) FROM Person WHERE name = 'Nested'").get.intVal == 0
+
 test "db.transaction recovers from a nested release failure":
     withDb:
         var state = TransactionAuthorizerState(
@@ -881,6 +970,8 @@ when not defined(macosx):
         withDb:
             expect SqliteError:
                 db.loadExtension("invalid extension path")
+            check db.databaseConfigValue(
+                abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION) == 1
             expectSqliteErrorMessage "Extension path contains an embedded NUL byte.":
                 db.loadExtension("invalid\0extension path")
 

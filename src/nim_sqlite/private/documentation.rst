@@ -63,7 +63,9 @@ Single-statement operations validate the complete input before execution:
 
 Use ``execScript`` for multiple statements. Unlike single-statement operations, it treats empty and comment-only
 scripts as no-ops. Every SQL operation rejects embedded NUL bytes rather than letting SQLite silently truncate the
-input.
+input. ``execScript`` rejects explicit ``BEGIN``, ``COMMIT``, ``END``, ``ROLLBACK``, ``SAVEPOINT``, and ``RELEASE``
+statements before they execute, preventing a script from invalidating the transaction that protects its work. Use
+``exec`` when transaction control must be managed manually.
 
 If a statement produces rows, ``exec`` and ``execScript`` discard them but continue stepping until the statement
 completes. A runtime error on any row raises ``SqliteError``. When ``execScript`` starts its transaction, such an error
@@ -197,8 +199,9 @@ savepoint, the template creates its own savepoint and leaves the manually manage
 responsible for the final ``COMMIT`` or ``ROLLBACK``. Manually committing, rolling back, or releasing that outer scope
 from inside the template is unsupported because it invalidates the template's cleanup boundary.
 
-Commit and savepoint-release failures trigger rollback cleanup. The original failure remains primary; a failure during
-cleanup is available through Nim's exception ``parent`` chain. See ``SAFETY.md`` for the complete failure contract.
+Commit and savepoint-release failures trigger rollback cleanup. The original failure remains primary; every failure
+during scoped and fallback cleanup is retained in order through Nim's exception ``parent`` chain. See ``SAFETY.md``
+for the complete failure contract.
 
 - Option 2: using the `exec` procedure manually
 
