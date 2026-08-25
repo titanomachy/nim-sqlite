@@ -104,9 +104,17 @@ let changed: int64 = db.changes # rows changed by the most recent INSERT, UPDATE
 ```
 
 Bound parameters handle quoting and data types correctly. Do not build SQL by interpolating untrusted values into the SQL string.
-Passing multiple statements to a single-statement operation raises `SqliteError`; use `execScript` for scripts containing several statements.
-The complete input is parsed before a single-statement operation executes. Trailing whitespace, extra semicolons, and SQLite comments—including a final `--` comment without a newline—do not count as another statement. A second statement, invalid trailing SQL, or an incomplete block comment or quoted token raises `SqliteError` before the first statement executes.
-Single-statement operations require an actual SQL statement: empty, whitespace-only, semicolon-only, and comment-only input raises a clear `SqliteError`. `execScript` intentionally treats those inputs as no-ops. Every SQL operation rejects embedded NUL bytes instead of allowing SQLite to silently truncate the input at the first NUL.
+
+### SQL input rules
+
+Single-statement operations validate the complete input before execution:
+
+- Trailing whitespace, extra semicolons, and complete SQLite comments are allowed. This includes a final `--` comment without a newline.
+- A second statement, malformed trailing SQL, or an incomplete block comment or quoted token raises `SqliteError` before anything executes.
+- Empty, whitespace-only, semicolon-only, and comment-only input raises `SqliteError`.
+
+Use `execScript` for multiple statements. Unlike single-statement operations, it treats empty and comment-only scripts as no-ops. Every SQL operation rejects embedded NUL bytes rather than letting SQLite silently truncate the input.
+
 If an `exec` statement produces rows—for example, `SELECT` or a statement with `RETURNING`—the rows are discarded, but SQLite is stepped through every row until the statement completes. A runtime error on any row raises `SqliteError`.
 
 For order-independent binding, use SQLite `:name` parameters and pass a named tuple. Each tuple field binds the parameter with the same name, regardless of where either one appears:

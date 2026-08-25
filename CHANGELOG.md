@@ -8,6 +8,8 @@ This changelog covers changes made after version 0.2.0.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-25
+
 ### Added
 
 - Add a pinned Linux hardening matrix covering normal, release, and danger ORC builds, ARC, AddressSanitizer, and UndefinedBehaviorSanitizer.
@@ -56,5 +58,6 @@ This changelog covers changes made after version 0.2.0.
 - Roll back an active transaction when `COMMIT` fails, while preserving the original commit error.
 - Preserve embedded NUL bytes when reading SQLite `TEXT` values.
 
-[Unreleased]: https://github.com/titanomachy/nim-sqlite/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/titanomachy/nim-sqlite/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/titanomachy/nim-sqlite/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/titanomachy/nim-sqlite/compare/v0.2.0...v0.3.0

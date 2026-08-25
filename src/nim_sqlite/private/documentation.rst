@@ -25,14 +25,23 @@ Executing SQL
 
 The `exec <#exec,DbConn,string,varargs[DbValue,toDb]>`_ procedure can be used to execute a single SQL statement.
 The `execScript <#execScript,DbConn,string>`_ procedure is used to execute several statements, but it doesn't support
-parameter substitution. Single-statement operations parse the complete input before executing: trailing whitespace,
-extra semicolons, and SQLite comments do not count as another statement, while a second statement, invalid trailing
-SQL, or incomplete input raises ``SqliteError`` before the first statement executes. Single-statement operations also
-raise ``SqliteError`` for empty, whitespace-only, semicolon-only, or comment-only input. ``execScript`` retains its
-no-op behavior for those inputs. All SQL operations reject embedded NUL bytes instead of allowing SQLite to truncate
-the input at the first NUL. If a statement produces rows, ``exec`` and ``execScript`` discard them but continue stepping
-until the statement completes. A runtime error on any row raises ``SqliteError``. When ``execScript`` starts its
-transaction, such an error rolls back the script.
+parameter substitution.
+
+Single-statement operations validate the complete input before execution:
+
+* Trailing whitespace, extra semicolons, and complete SQLite comments are allowed. This includes a final ``--``
+  comment without a newline.
+* A second statement, malformed trailing SQL, or an incomplete block comment or quoted token raises ``SqliteError``
+  before anything executes.
+* Empty, whitespace-only, semicolon-only, and comment-only input raises ``SqliteError``.
+
+Use ``execScript`` for multiple statements. Unlike single-statement operations, it treats empty and comment-only
+scripts as no-ops. Every SQL operation rejects embedded NUL bytes rather than letting SQLite silently truncate the
+input.
+
+If a statement produces rows, ``exec`` and ``execScript`` discard them but continue stepping until the statement
+completes. A runtime error on any row raises ``SqliteError``. When ``execScript`` starts its transaction, such an error
+rolls back the script.
 
 .. code-block:: nim
 
