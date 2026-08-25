@@ -14,6 +14,7 @@ This changelog covers changes made after version 0.2.0.
 
 - Add a pinned Linux hardening matrix covering normal, release, and danger ORC builds, ARC, AddressSanitizer, and UndefinedBehaviorSanitizer.
 - Add focused failure-path regressions that verify prepared handles return to their expected baseline after lifecycle, binding, decoding, parser, and execution errors.
+- Add a dedicated safety and hardening guide, keeping the README focused on everyday library use.
 
 ### Changed
 
