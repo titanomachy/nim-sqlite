@@ -155,6 +155,25 @@ The procedures that can execute multiple SQL statements (`execScript` and `execM
         db.exec("DELETE FROM Person")
         db.exec("""INSERT INTO Person(name, age) VALUES("Jane Doe", 35)""")
 
+Nested ``transaction`` blocks use SQLite savepoints. If an inner exception is caught by the outer block, only the inner
+block's work is rolled back. If an exception escapes the outer block, all nested work is rolled back.
+
+The default mode is ``TransactionMode.deferred``. Pass ``TransactionMode.immediate`` or
+``TransactionMode.exclusive`` to select the corresponding SQLite ``BEGIN`` mode for an outermost transaction:
+
+.. code-block:: nim
+
+    db.transaction(TransactionMode.immediate):
+        db.exec("DELETE FROM Person")
+
+Nested scopes inherit the outer mode. When SQL issued by the application has already started a transaction or
+savepoint, the template creates its own savepoint and leaves the manually managed outer scope open. Its caller remains
+responsible for the final ``COMMIT`` or ``ROLLBACK``. Manually committing, rolling back, or releasing that outer scope
+from inside the template is unsupported because it invalidates the template's cleanup boundary.
+
+Commit and savepoint-release failures trigger rollback cleanup. The original failure remains primary; a failure during
+cleanup is available through Nim's exception ``parent`` chain. See ``SAFETY.md`` for the complete failure contract.
+
 - Option 2: using the `exec` procedure manually
 
 .. code-block:: nim

@@ -17,6 +17,7 @@ type
         handle: ptr abi.sqlite3 ## The underlying SQLite3 handle
         cache: StmtCache
         activeOperations: int
+        transactionSerial: uint64
 
     DbConn* = distinct DbConnImpl ## Encapsulates a database connection.
 
@@ -30,6 +31,14 @@ type
     DbMode* = enum
         dbRead,
         dbReadWrite
+
+    TransactionMode* {.pure.} = enum
+        ## Controls how an outermost ``transaction`` acquires SQLite locks.
+        ## Nested transactions use savepoints, so their mode is inherited from
+        ## the surrounding transaction.
+        deferred,
+        immediate,
+        exclusive
 
     SqliteError* = object of CatchableError ## \
         ## Raised when whenever a database related error occurs.
@@ -64,6 +73,14 @@ type
         handle: ptr abi.sqlite3_stmt
         cached: bool
         key: string
+
+    TransactionScopeKind = enum
+        transactionRoot,
+        transactionSavepoint
+
+    TransactionScope = object
+        kind: TransactionScopeKind
+        savepoint: string
 
     ResultRow* = object
         values: seq[DbValue]
@@ -540,37 +557,126 @@ proc exec*[T: tuple](db: DbConn, sql: string, params: T) =
         finally:
             db.endOperation()
 
-template transaction*(db: DbConn, body: untyped) =
-    ## Starts a transaction and runs `body` within it. At the end the transaction is committed.
-    ## If the body or commit fails, an active transaction is rolled back. Nesting transactions is
-    ## a no-op.
-    if db.isInTransaction:
-        body
-    else:
-        db.exec("BEGIN")
-        var ok = true
+proc executeTransactionSql(db: DbConn, sql: string) =
+    # Transaction-control statements are short-lived and, for savepoints,
+    # uniquely named. Keeping them out of the user statement cache avoids
+    # evicting application statements as nested scopes are entered.
+    db.beginOperation()
+    var stmtHandle: ptr abi.sqlite3_stmt
+    try:
+        let rc = abi.sqlite3_prepare_v2(db.handle, sql.cstring, -1,
+            addr stmtHandle, nil)
+        db.checkOk(rc)
+        doAssert not stmtHandle.isNil,
+            "Internal transaction SQL did not produce a statement"
+        db.executeToCompletion(stmtHandle)
+    finally:
         try:
-            try:
-                body
-            except Exception:
-                ok = false
-                db.exec("ROLLBACK")
-                raise
+            if not stmtHandle.isNil:
+                discard abi.sqlite3_finalize(stmtHandle)
         finally:
-            if ok:
+            db.endOperation()
+
+proc attachSecondaryException(primary, secondary: ref Exception) =
+    ## Keep ``primary`` as the exception observed by the caller while exposing
+    ## a cleanup failure through Nim's standard exception-parent chain.
+    if secondary.isNil or secondary == primary:
+        return
+    secondary.parent = primary.parent
+    primary.parent = secondary
+
+proc nextSavepoint(db: DbConn): string =
+    if DbConnImpl(db).transactionSerial == high(uint64):
+        raise newSqliteError("Transaction savepoint identifier space is exhausted.")
+    DbConnImpl(db).transactionSerial.inc
+    "nim_sqlite_transaction_" & $DbConnImpl(db).transactionSerial
+
+proc beginTransaction(db: DbConn, mode: TransactionMode): TransactionScope =
+    if db.isInTransaction:
+        result.kind = transactionSavepoint
+        result.savepoint = db.nextSavepoint()
+        db.executeTransactionSql("SAVEPOINT " & result.savepoint)
+    else:
+        result.kind = transactionRoot
+        let beginSql = case mode
+            of TransactionMode.deferred: "BEGIN DEFERRED"
+            of TransactionMode.immediate: "BEGIN IMMEDIATE"
+            of TransactionMode.exclusive: "BEGIN EXCLUSIVE"
+        db.executeTransactionSql(beginSql)
+
+proc finishTransaction(db: DbConn, scope: TransactionScope) =
+    case scope.kind
+    of transactionRoot:
+        db.executeTransactionSql("COMMIT")
+    of transactionSavepoint:
+        db.executeTransactionSql("RELEASE " & scope.savepoint)
+
+proc rollbackTransaction(db: DbConn, scope: TransactionScope) =
+    if not db.isOpen or not db.isInTransaction:
+        return
+
+    case scope.kind
+    of transactionRoot:
+        db.executeTransactionSql("ROLLBACK")
+    of transactionSavepoint:
+        try:
+            db.executeTransactionSql("ROLLBACK TO " & scope.savepoint)
+        except Exception as rollbackError:
+            # A missing or unusable savepoint makes its exact boundary
+            # unknowable. Roll back the whole transaction to restore SQLite's
+            # autocommit state, then keep the savepoint failure observable.
+            try:
+                if db.isOpen and db.isInTransaction:
+                    db.executeTransactionSql("ROLLBACK")
+            except Exception as cleanupError:
+                attachSecondaryException(rollbackError, cleanupError)
+            raise rollbackError
+
+        try:
+            db.executeTransactionSql("RELEASE " & scope.savepoint)
+        except Exception as releaseError:
+            # ROLLBACK TO keeps the savepoint active. If RELEASE then fails,
+            # fall back to a full rollback so the connection has known state.
+            try:
+                if db.isOpen and db.isInTransaction:
+                    db.executeTransactionSql("ROLLBACK")
+            except Exception as cleanupError:
+                attachSecondaryException(releaseError, cleanupError)
+            raise releaseError
+
+template transaction*(db: DbConn, mode: TransactionMode, body: untyped) =
+    ## Runs ``body`` in a transaction using ``mode`` for an outermost scope.
+    ## Nested scopes use unique SQLite savepoints and inherit the outer mode.
+    ## If a transaction was started manually, this template creates a
+    ## savepoint and leaves the manual transaction open.
+    let transactionScope = db.beginTransaction(mode)
+    var transactionFailed = false
+    try:
+        try:
+            body
+        except Exception as transactionError:
+            transactionFailed = true
+            try:
+                db.rollbackTransaction(transactionScope)
+            except Exception as cleanupError:
+                attachSecondaryException(transactionError, cleanupError)
+            raise transactionError
+    finally:
+        if not transactionFailed:
+            try:
+                db.finishTransaction(transactionScope)
+            except Exception as transactionError:
                 try:
-                    db.exec("COMMIT")
-                except Exception as commitError:
-                    # Some errors, including deferred foreign-key violations,
-                    # leave the transaction and its pending changes active.
-                    # Rollback is best-effort so the commit error remains the
-                    # exception observed by the caller.
-                    try:
-                        if db.isOpen and db.isInTransaction:
-                            db.exec("ROLLBACK")
-                    except Exception:
-                        discard
-                    raise commitError
+                    db.rollbackTransaction(transactionScope)
+                except Exception as cleanupError:
+                    attachSecondaryException(transactionError, cleanupError)
+                raise transactionError
+
+template transaction*(db: DbConn, body: untyped) =
+    ## Runs ``body`` in a deferred transaction. See the overload accepting
+    ## ``TransactionMode`` for immediate and exclusive transactions.
+    db.transaction(TransactionMode.deferred):
+        body
 
 proc execMany*(db: DbConn, sql: string, params: seq[seq[DbValue]]) =
     ## Executes ``sql``, which must be a single SQL statement, repeatedly using each element of

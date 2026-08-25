@@ -89,6 +89,8 @@
 <li><a class="reference" href="#ResultRow" title="ResultRow = object">ResultRow</a></li>
 <li><a class="reference" href="#SqliteError" title="SqliteError = object of CatchableError">SqliteError</a></li>
 <li><a class="reference" href="#SqlStatement" title="SqlStatement = distinct SqlStatementImpl">SqlStatement</a></li>
+<li><a class="reference" href="#TransactionMode" title="TransactionMode {.pure.} = enum
+  deferred, immediate, exclusive">TransactionMode</a></li>
 
     </ul>
   </details>
@@ -265,6 +267,7 @@
     <ul class="simple simple-toc-section">
       <ul class="simple nested-toc-section">transaction
   <li><a class="reference" href="#transaction.t%2CDbConn%2Cuntyped" title="transaction(db: DbConn; body: untyped)">transaction(db: DbConn; body: untyped)</a></li>
+<li><a class="reference" href="#transaction.t%2CDbConn%2CTransactionMode%2Cuntyped" title="transaction(db: DbConn; mode: TransactionMode; body: untyped)">transaction(db: DbConn; mode: TransactionMode; body: untyped)</a></li>
 
 </ul>
 
@@ -359,7 +362,12 @@
     <span class="Comment"># Anything inside here is executed inside a transaction which</span>
     <span class="Comment"># will be rolled back in case of an error</span>
     <span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">exec</span><span class="Punctuation">(</span><span class="StringLit">&quot;DELETE FROM Person&quot;</span><span class="Punctuation">)</span>
-    <span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">exec</span><span class="Punctuation">(</span><span class="LongStringLit">&quot;&quot;&quot;INSERT INTO Person(name, age) VALUES(&quot;Jane Doe&quot;, 35)&quot;&quot;&quot;</span><span class="Punctuation">)</span></pre><ul class="simple"><li>Option 2: using the <tt class="docutils literal"><span class="pre"><span class="Identifier">exec</span></span></tt> procedure manually</li>
+    <span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">exec</span><span class="Punctuation">(</span><span class="LongStringLit">&quot;&quot;&quot;INSERT INTO Person(name, age) VALUES(&quot;Jane Doe&quot;, 35)&quot;&quot;&quot;</span><span class="Punctuation">)</span></pre><p>Nested <tt class="docutils literal"><span class="pre">transaction</span></tt> blocks use SQLite savepoints. If an inner exception is caught by the outer block, only the inner block's work is rolled back. If an exception escapes the outer block, all nested work is rolled back.</p>
+<p>The default mode is <tt class="docutils literal"><span class="pre">TransactionMode.deferred</span></tt>. Pass <tt class="docutils literal"><span class="pre">TransactionMode.immediate</span></tt> or <tt class="docutils literal"><span class="pre">TransactionMode.exclusive</span></tt> to select the corresponding SQLite <tt class="docutils literal"><span class="pre">BEGIN</span></tt> mode for an outermost transaction:</p>
+<pre class="listing"><span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">transaction</span><span class="Punctuation">(</span><span class="Identifier">TransactionMode</span><span class="Operator">.</span><span class="Identifier">immediate</span><span class="Punctuation">)</span><span class="Punctuation">:</span>
+    <span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">exec</span><span class="Punctuation">(</span><span class="StringLit">&quot;DELETE FROM Person&quot;</span><span class="Punctuation">)</span></pre><p>Nested scopes inherit the outer mode. When SQL issued by the application has already started a transaction or savepoint, the template creates its own savepoint and leaves the manually managed outer scope open. Its caller remains responsible for the final <tt class="docutils literal"><span class="pre">COMMIT</span></tt> or <tt class="docutils literal"><span class="pre">ROLLBACK</span></tt>. Manually committing, rolling back, or releasing that outer scope from inside the template is unsupported because it invalidates the template's cleanup boundary.</p>
+<p>Commit and savepoint-release failures trigger rollback cleanup. The original failure remains primary; a failure during cleanup is available through Nim's exception <tt class="docutils literal"><span class="pre">parent</span></tt> chain. See <tt class="docutils literal"><span class="pre">SAFETY.md</span></tt> for the complete failure contract.</p>
+<ul class="simple"><li>Option 2: using the <tt class="docutils literal"><span class="pre"><span class="Identifier">exec</span></span></tt> procedure manually</li>
 </ul>
 <pre class="listing"><span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">exec</span><span class="Punctuation">(</span><span class="StringLit">&quot;BEGIN&quot;</span><span class="Punctuation">)</span>
 <span class="Keyword">try</span><span class="Punctuation">:</span>
@@ -411,7 +419,7 @@
     <div id="DbConn">
   <dt><pre><a href="#DbConn"><span class="Identifier">DbConn</span></a> <span class="Other">=</span> <span class="Keyword">distinct</span> <span class="Identifier">DbConnImpl</span></pre></dt>
   <dd>
-    
+
     Encapsulates a database connection.
     
   </dd>
@@ -478,6 +486,15 @@ Raised when whenever a database related error occurs. Errors are typically a res
     
     A prepared SQL statement.
     
+  </dd>
+</div>
+<div id="TransactionMode">
+  <dt><pre><a href="#TransactionMode"><span class="Identifier">TransactionMode</span></a> {.<span class="Identifier">pure</span>.} <span class="Other">=</span> <span class="Keyword">enum</span>
+  <span class="Identifier">deferred</span><span class="Other">,</span> <span class="Identifier">immediate</span><span class="Other">,</span> <span class="Identifier">exclusive</span></pre></dt>
+  <dd>
+
+    Controls how an outermost <tt class="docutils literal"><span class="pre">transaction</span></tt> acquires SQLite locks. Nested transactions use savepoints, so their mode is inherited from the surrounding transaction.
+
   </dd>
 </div>
 
@@ -654,8 +671,8 @@ Raised when whenever a database related error occurs. Errors are typically a res
 <div id="execMany-procs-all">
   <div id="execMany,DbConn,string,seq[seq[DbValue]]">
   <dt><pre><span class="Keyword">proc</span> <a href="#execMany%2CDbConn%2Cstring%2Cseq%5Bseq%5BDbValue%5D%5D"><span class="Identifier">execMany</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">seq</span><span class="Other">[</span><a href="#DbValue"><span class="Identifier">DbValue</span></a><span class="Other">]</span><span class="Other">]</span><span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
     
     Executes <tt class="docutils literal"><span class="pre">sql</span></tt>, which must be a single SQL statement, repeatedly using each element of <tt class="docutils literal"><span class="pre">params</span></tt> as parameters. The statements are executed inside a transaction.
@@ -664,8 +681,8 @@ Raised when whenever a database related error occurs. Errors are typically a res
 </div>
 <div id="execMany,SqlStatement,seq[seq[DbValue]]">
   <dt><pre><span class="Keyword">proc</span> <a href="#execMany%2CSqlStatement%2Cseq%5Bseq%5BDbValue%5D%5D"><span class="Identifier">execMany</span></a><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">seq</span><span class="Other">[</span><a href="#DbValue"><span class="Identifier">DbValue</span></a><span class="Other">]</span><span class="Other">]</span><span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span>
-    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
     
     Executes <tt class="docutils literal"><span class="pre">statement</span></tt> repeatedly using each element of <tt class="docutils literal"><span class="pre">params</span></tt> as parameters. The statements are executed inside a transaction.
@@ -692,8 +709,8 @@ Raised when whenever a database related error occurs. Errors are typically a res
 </div>
 <div id="execScript-procs-all">
   <div id="execScript,DbConn,string">
-  <dt><pre><span class="Keyword">proc</span> <a href="#execScript%2CDbConn%2Cstring"><span class="Identifier">execScript</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span>
-    <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
+  <dt><pre><span class="Keyword">proc</span> <a href="#execScript%2CDbConn%2Cstring"><span class="Identifier">execScript</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
     
@@ -1144,7 +1161,15 @@ Raised when whenever a database related error occurs. Errors are typically a res
   <dt><pre><span class="Keyword">template</span> <a href="#transaction.t%2CDbConn%2Cuntyped"><span class="Identifier">transaction</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span></pre></dt>
   <dd>
     
-    Starts a transaction and runs <tt class="docutils literal"><span class="pre"><span class="Identifier">body</span></span></tt> within it. At the end the transaction is committed. If the body or commit fails, an active transaction is rolled back. Nesting transactions is a no-op.
+    Runs <tt class="docutils literal"><span class="pre">body</span></tt> in a deferred transaction. See the overload accepting <tt class="docutils literal"><span class="pre">TransactionMode</span></tt> for immediate and exclusive transactions.
+
+  </dd>
+</div>
+<div id="transaction.t,DbConn,TransactionMode,untyped">
+  <dt><pre><span class="Keyword">template</span> <a href="#transaction.t%2CDbConn%2CTransactionMode%2Cuntyped"><span class="Identifier">transaction</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">mode</span><span class="Other">:</span> <a href="#TransactionMode"><span class="Identifier">TransactionMode</span></a><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Runs <tt class="docutils literal"><span class="pre">body</span></tt> in a transaction using <tt class="docutils literal"><span class="pre">mode</span></tt> for an outermost scope. Nested scopes use unique SQLite savepoints and inherit the outer mode. If a transaction was started manually, this template creates a savepoint and leaves the manual transaction open.
     
   </dd>
 </div>
@@ -1160,7 +1185,7 @@ Raised when whenever a database related error occurs. Errors are typically a res
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 13:42:32 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 14:49:32 UTC</small>
       </div>
     </div>
   </div>

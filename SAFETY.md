@@ -46,15 +46,21 @@ Invalid lifecycle use is treated as a programming error and rejected with `Asser
 
 `exec`, prepared-statement `exec`, and each statement in `execScript` continue stepping until SQLite reports completion. If a row-producing statement encounters an error after returning one or more rows, the error is still reported and the statement is reset or released.
 
-`transaction` rolls back when an exception escapes. If `COMMIT` fails while SQLite still considers the transaction active, the library attempts a rollback before propagating the original commit error.
+`transaction` rolls back when an exception escapes. Nested transaction blocks use uniquely named SQLite savepoints. A caught inner failure therefore rolls back only the inner block, while a failure escaping the outer block rolls back the full transaction.
 
-`execMany` and `execScript` run their work in transactions when they start outside an existing transaction. A failure aborts and rolls back that work. Nested transaction helpers reuse the active transaction.
+Outermost transactions default to `TransactionMode.deferred`. `TransactionMode.immediate` and `TransactionMode.exclusive` select SQLite's corresponding `BEGIN` modes. A nested block always inherits the surrounding transaction's mode because SQLite savepoints do not acquire a separate transaction mode.
+
+If `COMMIT` or a nested `RELEASE` fails while SQLite still considers a transaction active, the library attempts rollback cleanup before propagating the original failure. A savepoint cleanup failure causes a full transaction rollback because the narrower boundary can no longer be trusted. If a cleanup attempt also fails, the original body, commit, or release exception remains the exception observed by the caller and the cleanup exception is attached through Nim's `error.parent` chain. A failure of the final full rollback can leave SQLite's transaction active; callers can inspect `isInTransaction` before deciding whether to retry rollback or discard the connection.
+
+Transactions and savepoints started manually with SQL remain owned by the caller. Entering `transaction` while SQLite is already in a transaction creates a savepoint; success releases that savepoint without committing the manual transaction, and ordinary failure rolls back only to that savepoint. The requested `TransactionMode` has no effect in this case. Do not manually commit, roll back, or release the active transaction/savepoint from inside a `transaction` block, because doing so invalidates the scope that the template must finish.
+
+`execMany` and `execScript` start an outer transaction when needed and use a savepoint when a transaction is already active. A failure aborts and rolls back their own work without silently committing partial changes into a surrounding scope.
 
 Preparation, binding, decoding, parsing, and execution failures clean up or reset their statement handles so failed operations do not poison later queries.
 
 ## Verification
 
-The test suite includes focused failure-path checks for connection and statement lifecycles, reentrant conversions, parser failures, range errors, row-producing execution errors, cleanup, and rollback behavior.
+The test suite includes focused failure-path checks for connection and statement lifecycles, reentrant conversions, parser failures, range errors, row-producing execution errors, nested savepoints, transaction modes, cleanup, and rollback behavior.
 
 CI exercises:
 

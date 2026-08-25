@@ -1,4 +1,4 @@
-import std / [unittest, options, sequtils, strutils, times]
+import std / [unittest, options, os, sequtils, strutils, times]
 import nim_sqlite
 from nim_sqlite / sqlite3_abi as abi import nil
 
@@ -28,6 +28,31 @@ type
         enumZero,
         enumOne,
         enumTwo
+
+    DeniedSavepointOperation = enum
+        denyNoSavepointOperation,
+        denySavepointRollback,
+        denySavepointRelease
+
+    TransactionAuthorizerState = object
+        deniedOperation: DeniedSavepointOperation
+
+proc transactionAuthorizer(userData: pointer, actionCode: cint,
+        operation, savepoint, database, trigger: cstring): cint {.cdecl.} =
+    discard savepoint
+    discard database
+    discard trigger
+    if actionCode != abi.SQLITE_SAVEPOINT or operation.isNil:
+        return abi.SQLITE_OK
+
+    let state = cast[ptr TransactionAuthorizerState](userData)
+    case state.deniedOperation
+    of denyNoSavepointOperation:
+        abi.SQLITE_OK
+    of denySavepointRollback:
+        if $operation == "ROLLBACK": abi.SQLITE_DENY else: abi.SQLITE_OK
+    of denySavepointRelease:
+        if $operation == "RELEASE": abi.SQLITE_DENY else: abi.SQLITE_OK
 
 template expectSqliteErrorMessage(expectedMessage: string, body: untyped) =
     block:
@@ -627,9 +652,155 @@ test "db.transaction rolls back a failed commit":
 
 test "db.transaction nesting":
     withDb:
+        let statementsBefore = db.preparedStatementCount
         db.transaction:
+            check db.preparedStatementCount == statementsBefore
             db.transaction:
+                check db.preparedStatementCount == statementsBefore
                 check db.all(SelectPersons).len == 2
+        # Only the application SELECT is cached; unique transaction-control
+        # statements are finalized immediately.
+        check db.preparedStatementCount == statementsBefore + 1
+
+test "db.transaction rolls back only a failed nested scope":
+    withDb:
+        db.transaction:
+            db.exec("INSERT INTO Person(name, age) VALUES('Outer One', 31)")
+            try:
+                db.transaction:
+                    db.exec("INSERT INTO Person(name, age) VALUES('Inner', 32)")
+                    raise newException(ValueError, "inner failure")
+            except ValueError as error:
+                check error.msg == "inner failure"
+            db.exec("INSERT INTO Person(name, age) VALUES('Outer Two', 33)")
+
+        check db.value("SELECT COUNT(*) FROM Person WHERE name LIKE 'Outer %'").get.intVal == 2
+        check db.value("SELECT COUNT(*) FROM Person WHERE name = 'Inner'").get.intVal == 0
+
+test "db.transaction outer failure rolls back nested work":
+    withDb:
+        var caught = false
+        try:
+            db.transaction:
+                db.exec("INSERT INTO Person(name, age) VALUES('Outer', 31)")
+                db.transaction:
+                    db.exec("INSERT INTO Person(name, age) VALUES('Inner', 32)")
+                raise newException(ValueError, "outer failure")
+        except ValueError:
+            caught = true
+
+        check caught
+        check db.value("SELECT COUNT(*) FROM Person WHERE name IN ('Outer', 'Inner')").get.intVal == 0
+        check not db.isInTransaction
+
+test "db.execMany failure rolls back its nested savepoint":
+    withDb:
+        db.transaction:
+            db.exec("INSERT INTO Person(name, age) VALUES('Outer', 31)")
+            expect SqliteError:
+                db.execMany("INSERT INTO Person(name, age) VALUES(?, ?)", @[
+                    @[toDb("Bulk One"), toDb(32)],
+                    @[toDb("Bulk Two")]
+                ])
+
+        check db.value("SELECT COUNT(*) FROM Person WHERE name = 'Outer'").get.intVal == 1
+        check db.value("SELECT COUNT(*) FROM Person WHERE name LIKE 'Bulk %'").get.intVal == 0
+
+test "db.transaction mode controls outer transaction locking":
+    let databasePath = getTempDir() / ("nim_sqlite_transaction_modes_" &
+        $getCurrentProcessId() & "_" & $epochTime() & ".sqlite")
+    var first, second: DbConn
+    try:
+        first = openDatabase(databasePath)
+        second = openDatabase(databasePath)
+        first.exec("CREATE TABLE Item(value INTEGER)")
+
+        first.transaction(TransactionMode.deferred):
+            second.exec("INSERT INTO Item(value) VALUES(1)")
+
+        first.transaction(TransactionMode.immediate):
+            expect SqliteError:
+                second.exec("INSERT INTO Item(value) VALUES(2)")
+
+        first.transaction(TransactionMode.exclusive):
+            expect SqliteError:
+                discard second.value("SELECT COUNT(*) FROM Item")
+
+        check first.value("SELECT COUNT(*) FROM Item").get.intVal == 1
+    finally:
+        second.close()
+        first.close()
+        if fileExists(databasePath):
+            removeFile(databasePath)
+
+test "db.transaction uses a savepoint inside a manual transaction":
+    withDb:
+        db.exec("BEGIN IMMEDIATE")
+        db.exec("INSERT INTO Person(name, age) VALUES('Manual', 40)")
+        try:
+            db.transaction(TransactionMode.exclusive):
+                db.exec("INSERT INTO Person(name, age) VALUES('Nested', 41)")
+                raise newException(ValueError, "nested failure")
+        except ValueError:
+            discard
+
+        check db.isInTransaction
+        check db.value("SELECT COUNT(*) FROM Person WHERE name = 'Manual'").get.intVal == 1
+        check db.value("SELECT COUNT(*) FROM Person WHERE name = 'Nested'").get.intVal == 0
+        db.exec("COMMIT")
+        check not db.isInTransaction
+
+test "db.transaction exposes rollback cleanup failures":
+    withDb:
+        var state = TransactionAuthorizerState(
+            deniedOperation: denyNoSavepointOperation)
+        db.exec("BEGIN")
+        check abi.sqlite3_set_authorizer(db.unsafeHandle,
+            transactionAuthorizer, addr state) == abi.SQLITE_OK
+        try:
+            var caught = false
+            try:
+                db.transaction:
+                    db.exec("INSERT INTO Person(name, age) VALUES('Nested', 41)")
+                    state.deniedOperation = denySavepointRollback
+                    raise newException(ValueError, "body failure")
+            except ValueError as error:
+                caught = true
+                check error.msg == "body failure"
+                check not error.parent.isNil
+                check error.parent of SqliteError
+            check caught
+        finally:
+            discard abi.sqlite3_set_authorizer(db.unsafeHandle, nil, nil)
+
+        # Denying ROLLBACK TO forces the safety fallback to roll back the full
+        # manually created transaction, restoring a known autocommit state.
+        check not db.isInTransaction
+        check db.value("SELECT COUNT(*) FROM Person WHERE name = 'Nested'").get.intVal == 0
+
+test "db.transaction recovers from a nested release failure":
+    withDb:
+        var state = TransactionAuthorizerState(
+            deniedOperation: denyNoSavepointOperation)
+        db.exec("BEGIN")
+        check abi.sqlite3_set_authorizer(db.unsafeHandle,
+            transactionAuthorizer, addr state) == abi.SQLITE_OK
+        var caught = false
+        try:
+            try:
+                db.transaction:
+                    db.exec("INSERT INTO Person(name, age) VALUES('Nested', 41)")
+                    state.deniedOperation = denySavepointRelease
+            except SqliteError as error:
+                caught = true
+                check not error.parent.isNil
+                check error.parent of SqliteError
+            check caught
+        finally:
+            discard abi.sqlite3_set_authorizer(db.unsafeHandle, nil, nil)
+
+        check not db.isInTransaction
+        check db.value("SELECT COUNT(*) FROM Person WHERE name = 'Nested'").get.intVal == 0
 
 test "db.isInTransaction":
     withDb:

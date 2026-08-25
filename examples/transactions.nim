@@ -28,7 +28,8 @@ try:
     except ValueError as error:
         echo "Rejected transfer: ", error.msg
 
-    db.transfer("Checking", "Savings", 40)
+    db.transaction(TransactionMode.immediate):
+        db.transfer("Checking", "Savings", 40)
     echo "Checking: ", db.balance("Checking")
     echo "Savings: ", db.balance("Savings")
 finally:

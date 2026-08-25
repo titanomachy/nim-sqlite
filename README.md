@@ -107,13 +107,33 @@ Rows contain `DbValue` values and support access by position or column name. Use
 
 ## Transactions and bulk operations
 
-`transaction` commits when the block finishes and rolls back if an exception escapes:
+`transaction` commits when the block finishes and rolls back if an exception escapes.
+Nested blocks use SQLite savepoints, so a caught inner failure rolls back only the
+inner block:
 
 ```nim
 db.transaction:
   db.exec("UPDATE account SET balance = balance - ? WHERE id = ?", 50, 1)
-  db.exec("UPDATE account SET balance = balance + ? WHERE id = ?", 50, 2)
+  try:
+    db.transaction:
+      db.exec("UPDATE account SET balance = balance + ? WHERE id = ?", 50, 2)
+      raise newException(ValueError, "cancel credit")
+  except ValueError:
+    discard
 ```
+
+The default mode is `TransactionMode.deferred`. Pass `TransactionMode.immediate`
+or `TransactionMode.exclusive` when the outermost transaction should acquire its
+SQLite lock earlier:
+
+```nim
+db.transaction(TransactionMode.immediate):
+  db.exec("UPDATE account SET balance = balance - ? WHERE id = ?", 50, 1)
+```
+
+If a transaction was started manually with SQL, `transaction` creates a savepoint
+and leaves the manual transaction open for its caller to commit or roll back.
+See [Safety and hardening](SAFETY.md) for the detailed cleanup contract.
 
 `execMany` binds several parameter sets to the same statement in one transaction:
 

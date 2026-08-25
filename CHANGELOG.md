@@ -8,6 +8,16 @@ This changelog covers changes made after version 0.2.0.
 
 ## [Unreleased]
 
+### Added
+
+- Add savepoint-backed nested `transaction` blocks so caught inner failures roll back only their own work.
+- Add `TransactionMode.deferred`, `TransactionMode.immediate`, and `TransactionMode.exclusive` for outermost transactions.
+
+### Changed
+
+- Recover from commit and savepoint-release failures with rollback cleanup, preserving the original exception and exposing secondary cleanup failures through its `parent` chain.
+- Treat `transaction` inside a manually started SQL transaction as a savepoint scope without taking ownership of the outer transaction.
+
 ## [0.4.0] - 2026-08-25
 
 ### Added
