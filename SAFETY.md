@@ -155,4 +155,4 @@ CI exercises:
 - UndefinedBehaviorSanitizer
 - a minimum line-coverage threshold
 
-Release-level behavior changes are recorded in the [changelog](CHANGELOG.md). The implementation history and future hardening work are tracked in the [hardening plan](PLANS/PLAN1-hardening.md).
+Release-level behavior changes are recorded in the [changelog](CHANGELOG.md).
