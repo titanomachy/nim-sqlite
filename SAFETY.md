@@ -25,6 +25,8 @@ SQLite `INTEGER` values are signed 64-bit integers. Binding an ordinal that does
 Built-in `fromDb` conversions validate the SQLite storage class before reading a value. Text and BLOB operations use SQLite's 64-bit APIs, preserve empty values, and validate reported lengths before allocating Nim memory.
 
 The `changes` operation uses SQLite's 64-bit changes API and returns `int64`.
+`totalChanges` reports the connection's cumulative count. `sqliteVersion` and
+`sqliteCompileOptions` report the bundled SQLite build for diagnostics.
 
 ## Error handling and sensitive data
 
@@ -87,6 +89,16 @@ restrictive, but SQLite rejects a URI that attempts to make it less restrictive.
 symbolic link to be rejected. It is opt-in because existing deployments may
 intentionally use symlinked paths.
 
+`maxSqlBytes` and `maxVmOps` optionally install SQLite SQL-length and
+virtual-machine operation limits. Zero retains SQLite's defaults. Applications
+processing untrusted SQL can set values suited to their workload; overly low
+limits may also reject the library's initialization SQL.
+
+`quickCheck` parses SQLite's quick integrity-check result into an empty
+sequence for `ok` or diagnostic strings for failures. It is an optional
+application step when opening untrusted files; it does not prove that SQL or
+database content is safe to trust.
+
 `SecurityProfile.hardened` enables `SQLITE_DBCONFIG_DEFENSIVE` and disables
 `SQLITE_DBCONFIG_TRUSTED_SCHEMA` before the library executes initialization SQL.
 The library passes SQLite's exact C ABI types to these variadic configuration
@@ -101,6 +113,11 @@ It does not impose application-specific resource limits, disable triggers, views
 or attachment, validate an untrusted database file, or authorize user-supplied
 SQL. The library also does not silently enable WAL or change synchronous or
 journal durability settings; those remain application policy.
+
+Extension loading is disabled by default. Set `OpenOptions.allowExtensions`
+only when loading a trusted native library. `loadExtension` enables the C API
+for one attempt and disables it in `finally`, including failed loads. An
+extension executes native code with the application's privileges.
 
 ## Connection and statement lifecycles
 
@@ -118,6 +135,27 @@ The connection-level statement cache leases a cached statement to one operation 
 
 Invalid lifecycle use is reported as `SqliteUsageError`. SQLite operational and
 library validation failures are reported as `SqliteError`.
+
+`withDatabase` and `withStatement` provide deterministic cleanup across normal
+exit, exceptions, and early returns. A `withBackup` scope likewise calls
+`sqlite3_backup_finish` once for its initialized backup handle.
+
+The wrapper's cache and lifecycle state are not synchronized for concurrent
+use of one connection or its statements. Use separate connections across
+threads. `interrupt` may request cancellation from another thread only while
+the caller coordinates with `close` so the SQLite handle stays alive.
+
+`withDeadline` installs a SQLite progress handler for its scope and restores
+the previous handler for nested scopes. It uses no application callback, so
+the handler never re-enters the connection. SQLite checks progress at intervals;
+a deadline is a cancellation request, not an exact real-time limit. An
+interrupted write may cause SQLite to roll back its whole transaction.
+
+During online backup, the destination connection is guarded against other
+wrapper operations. `BackupStep.busy` and `BackupStep.locked` indicate retryable
+lock contention. The caller may retry a step within the same scope after
+resolving contention. `backupDatabase` performs a full copy and raises a
+structured `SqliteError` when a lock prevents completion.
 
 ## Execution and transaction failures
 

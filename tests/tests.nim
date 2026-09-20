@@ -1,4 +1,4 @@
-import std / [unittest, options, os, sequtils, strutils, times]
+import std / [unittest, options, os, sequtils, strutils, times, random]
 import nim_sqlite
 from nim_sqlite / sqlite3_abi as abi import nil
 
@@ -107,6 +107,30 @@ proc toDb(value: ReentrantParam): DbValue =
     discard value.db.one("SELECT :first, :second", (first: 100, second: 200))
     toDb(22)
 
+type ThreadProbe = object
+    db: ptr DbConn
+    rejected: bool
+
+proc useConnectionOnOtherThread(probe: ptr ThreadProbe) {.thread.} =
+    {.cast(gcsafe).}:
+        try:
+            discard probe.db[].value("SELECT 1")
+        except SqliteUsageError:
+            probe.rejected = true
+
+proc interruptOnOtherThread(probe: ptr ThreadProbe) {.thread.} =
+    {.cast(gcsafe).}:
+        probe.db[].interrupt()
+        probe.rejected = true
+
+proc returnFromScopedResources(keptDb: var DbConn,
+        keptStatement: var SqlStatement): int =
+    withDatabase(":memory:"):
+        withStatement(db, "SELECT 1"):
+            keptDb = db
+            keptStatement = statement
+            return 1
+
 type ClosingParam = object
     db: DbConn
 
@@ -140,6 +164,180 @@ template withDb(body: untyped) =
         try:
             body
         finally:
+            db.close()
+
+test "scoped resources and diagnostics":
+    var keptDb: DbConn
+    var keptStatement: SqlStatement
+    expect ValueError:
+        withDatabase(":memory:"):
+            keptDb = db
+            db.exec("CREATE TABLE t(value INTEGER)")
+            check db.quickCheck.len == 0
+            let initialChanges = db.totalChanges
+            withStatement(db, "INSERT INTO t(value) VALUES(?)"):
+                keptStatement = statement
+                check not statement.isReadonly
+                statement.exec(7)
+                check db.totalChanges == initialChanges + 1
+                raise newException(ValueError, "exit")
+    check not keptDb.isOpen
+    check not keptStatement.isAlive
+    var returnedDb: DbConn
+    var returnedStatement: SqlStatement
+    check returnFromScopedResources(returnedDb, returnedStatement) == 1
+    check not returnedDb.isOpen
+    check not returnedStatement.isAlive
+    check sqliteVersion().len > 0
+    check sqliteCompileOptions().len > 0
+
+test "deadline interrupts work and restores nested scopes":
+    withDatabase(":memory:", block:
+        var options = defaultOpenOptions
+        options.cacheSize = 0
+        options):
+        withDeadline(db, 10_000):
+            let handlesBefore = db.preparedStatementCount
+            var interrupted = false
+            try:
+                withDeadline(db, 0):
+                    discard db.one("""
+                        WITH RECURSIVE numbers(n) AS (
+                            VALUES(1) UNION ALL SELECT n+1 FROM numbers
+                            WHERE n < 1000000
+                        ) SELECT sum(n) FROM numbers
+                    """)
+            except SqliteError as error:
+                interrupted = true
+                check error.primaryCode == int32(abi.SQLITE_INTERRUPT)
+            check interrupted
+            check db.preparedStatementCount == handlesBefore
+            check db.value("SELECT 1").get().fromDb(int) == 1
+        check db.value("SELECT 2").get().fromDb(int) == 2
+
+test "online backup supports complete and incremental copies":
+    let source = openDatabase(":memory:")
+    let destination = openDatabase(":memory:")
+    try:
+        source.exec("CREATE TABLE t(value INTEGER)")
+        source.exec("INSERT INTO t VALUES(42)")
+        let destinationStatement = destination.stmt("SELECT 1")
+        withBackup(destination, source):
+            expect SqliteUsageError:
+                discard destination.value("SELECT 1")
+            expect SqliteUsageError:
+                destination.close()
+            expect SqliteUsageError:
+                discard destinationStatement.value()
+            expect SqliteUsageError:
+                destinationStatement.finalize()
+            var status = backup.step(1)
+            check backup.totalPages > 0
+            while status == BackupStep.more:
+                status = backup.step(1)
+            check status == BackupStep.done
+            check backup.remainingPages == 0
+        destinationStatement.finalize()
+        check destination.value("SELECT value FROM t").get().fromDb(int) == 42
+        expect ValueError:
+            withBackup(destination, source):
+                discard backup.step(1)
+                raise newException(ValueError, "leave backup scope")
+        check destination.value("SELECT value FROM t").get().fromDb(int) == 42
+        source.exec("INSERT INTO t VALUES(43)")
+        destination.backupDatabase(source)
+        check destination.value("SELECT count(*) FROM t").get().fromDb(int) == 2
+    finally:
+        destination.close()
+        source.close()
+
+test "OpenOptions applies optional SQLite resource limits":
+    var options = defaultOpenOptions
+    options.maxSqlBytes = 256
+    options.maxVmOps = 10_000
+    withDatabase(":memory:", options):
+        check abi.sqlite3_limit(db.unsafeHandle,
+            abi.SQLITE_LIMIT_SQL_LENGTH, -1) == 256
+        check abi.sqlite3_limit(db.unsafeHandle,
+            abi.SQLITE_LIMIT_VDBE_OP, -1) == 10_000
+        check db.value("SELECT 1").get().fromDb(int) == 1
+    options.maxVmOps = high(int64)
+    expect SqliteError:
+        discard openDatabase(":memory:", options)
+
+test "connection use from another thread is rejected":
+    withDb:
+        var probe = ThreadProbe(db: addr db)
+        var thread: Thread[ptr ThreadProbe]
+        createThread(thread, useConnectionOnOtherThread, addr probe)
+        joinThread(thread)
+        check probe.rejected
+        probe.rejected = false
+        createThread(thread, interruptOnOtherThread, addr probe)
+        joinThread(thread)
+        check probe.rejected
+        check db.value("SELECT 1").get().fromDb(int) == 1
+
+test "rollback works with rollback journal and WAL":
+    for mode in ["DELETE", "WAL"]:
+        let path = getTempDir() / ("nim_sqlite_journal_" & mode & "_" &
+            $getCurrentProcessId() & "_" & $epochTime() & ".sqlite")
+        try:
+            withDatabase(path):
+                check db.value("PRAGMA journal_mode = " & mode).get()
+                    .fromDb(string).toUpperAscii == mode
+                db.exec("CREATE TABLE t(value INTEGER)")
+                expect ValueError:
+                    db.transaction:
+                        db.exec("INSERT INTO t VALUES(1)")
+                        raise newException(ValueError, "rollback")
+                check db.value("SELECT count(*) FROM t").get()
+                    .fromDb(int) == 0
+        finally:
+            for suffix in ["", "-wal", "-shm"]:
+                if fileExists(path & suffix):
+                    removeFile(path & suffix)
+
+test "corrupt database input reports SQLite error":
+    let path = getTempDir() / ("nim_sqlite_corrupt_" &
+        $getCurrentProcessId() & "_" & $epochTime() & ".sqlite")
+    try:
+        writeFile(path, "not a sqlite database" & repeat("!", 100))
+        expect SqliteError:
+            let db = openDatabase(path)
+            try:
+                discard db.quickCheck
+            finally:
+                db.close()
+    finally:
+        if fileExists(path):
+            removeFile(path)
+
+test "deterministic statement lifecycle sequences":
+    var rng = initRand(0x517E)
+    for trial in 0 ..< 64:
+        var db = openDatabase(":memory:", cacheSize = 0)
+        var statement: SqlStatement
+        for operation in 0 ..< 20:
+            case rng.rand(4)
+            of 0:
+                if db.isOpen and not statement.isAlive:
+                    statement = db.stmt("SELECT ?")
+            of 1:
+                if statement.isAlive:
+                    check statement.value(operation).get().fromDb(int) ==
+                        operation
+            of 2:
+                statement.finalize()
+            of 3:
+                if db.isOpen:
+                    discard db.value("SELECT 1")
+            else:
+                if db.isOpen:
+                    db.close()
+        statement.finalize()
+        if db.isOpen:
+            check db.preparedStatementCount == 0
             db.close()
 
 test "db.all":
@@ -967,13 +1165,22 @@ test "db.close default value":
 
 when not defined(macosx):
     test "db.loadExtension":
-        withDb:
+        var options = defaultOpenOptions
+        options.allowExtensions = true
+        withDatabase(":memory:", options):
             expect SqliteError:
                 db.loadExtension("invalid extension path")
             check db.databaseConfigValue(
-                abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION) == 1
+                abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION) == 0
             expectSqliteErrorMessage "Extension path contains an embedded NUL byte.":
                 db.loadExtension("invalid\0extension path")
+
+test "extension loading is opt-in":
+    withDb:
+        expect SqliteError:
+            db.loadExtension("invalid extension path")
+        check db.databaseConfigValue(
+            abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION) == 0
 
 test "db.loadExtension on closed connection":
     let db = openDatabase(":memory:")

@@ -58,6 +58,7 @@
 <li><a class="reference" id="executing-sql_toc" href="#executing-sql">Executing SQL</a></li>
 <ul class="simple"><li><a class="reference" id="executing-sql-named-parameters_toc" href="#executing-sql-named-parameters">Named parameters</a></li>
 </ul><li><a class="reference" id="reading-data_toc" href="#reading-data">Reading data</a></li>
+<li><a class="reference" id="scoped-resources-deadlines-and-online-backups_toc" href="#scoped-resources-deadlines-and-online-backups">Scoped resources, deadlines, and online backups</a></li>
 <li><a class="reference" id="inserting-data-in-bulk_toc" href="#inserting-data-in-bulk">Inserting data in bulk</a></li>
 <li><a class="reference" id="transactions_toc" href="#transactions">Transactions</a></li>
 <li><a class="reference" id="prepared-statements_toc" href="#prepared-statements">Prepared statements</a></li>
@@ -70,7 +71,10 @@
   <details open>
     <summary><a class="reference reference-toplevel" href="#7" id="57">Types</a></summary>
     <ul class="simple simple-toc-section">
-      <li><a class="reference" href="#DbConn" title="DbConn = distinct DbConnImpl">DbConn</a></li>
+      <li><a class="reference" href="#Backup" title="Backup = distinct BackupImpl">Backup</a></li>
+<li><a class="reference" href="#BackupStep" title="BackupStep {.pure.} = enum
+  more, done, busy, locked">BackupStep</a></li>
+<li><a class="reference" href="#DbConn" title="DbConn = distinct DbConnImpl">DbConn</a></li>
 <li><a class="reference" href="#DbMode" title="DbMode = enum
   dbRead, dbReadWrite">DbMode</a></li>
 <li><a class="reference" href="#DbValue" title="DbValue = object
@@ -96,7 +100,10 @@
                              ## disables the busy timeout.
   uriFilename*: bool         ## Interpret a ``file:`` path as an SQLite URI.
   noFollow*: bool            ## Reject database paths containing symbolic links.
-  securityProfile*: SecurityProfile ## SQLite security configuration.">OpenOptions</a></li>
+  securityProfile*: SecurityProfile ## SQLite security configuration.
+  allowExtensions*: bool     ## Permit explicit loading of trusted native extensions.
+  maxSqlBytes*: int64        ## Optional SQL text byte limit; zero keeps SQLite's default.
+  maxVmOps*: int64           ## Optional virtual-machine operation limit per statement.">OpenOptions</a></li>
 <li><a class="reference" href="#ResultRow" title="ResultRow = object">ResultRow</a></li>
 <li><a class="reference" href="#SecurityProfile" title="SecurityProfile {.pure.} = enum
   normal, hardened">SecurityProfile</a></li>
@@ -110,7 +117,7 @@
                              ## string for a library-side error.">SqliteError</a></li>
 <li><a class="reference" href="#SqliteOperation" title="SqliteOperation {.pure.} = enum
   validation, conversion, openDatabase, closeDatabase, prepare, binding,
-  execute, transaction, loadExtension">SqliteOperation</a></li>
+  execute, transaction, loadExtension, backup">SqliteOperation</a></li>
 <li><a class="reference" href="#SqliteUsageError" title="SqliteUsageError = object of CatchableError">SqliteUsageError</a></li>
 <li><a class="reference" href="#SqlStatement" title="SqlStatement = distinct SqlStatementImpl">SqlStatement</a></li>
 <li><a class="reference" href="#TransactionMode" title="TransactionMode {.pure.} = enum
@@ -125,7 +132,8 @@
     <ul class="simple simple-toc-section">
       <li><a class="reference" href="#defaultOpenOptions" title="defaultOpenOptions = (mode: OpenMode.readWriteCreate, cacheSize: 100,
                       busyTimeoutMs: 0, uriFilename: false, noFollow: false,
-                      securityProfile: SecurityProfile.normal)">defaultOpenOptions</a></li>
+                      securityProfile: SecurityProfile.normal,
+                      allowExtensions: false, maxSqlBytes: 0, maxVmOps: 0)">defaultOpenOptions</a></li>
 
     </ul>
   </details>
@@ -152,6 +160,10 @@
 <li><a class="reference" href="#all%2CSqlStatement%2Cvarargs%5BDbValue%2CtoDb%5D" title="all(statement: SqlStatement; params: varargs[DbValue, toDb]): seq[ResultRow]">all(statement: SqlStatement; params: varargs[DbValue, toDb]): seq[ResultRow]</a></li>
 <li><a class="reference" href="#all%2CDbConn%2Cstring%2CT" title="all[T: tuple](db: DbConn; sql: string; params: T): seq[ResultRow]">all[T: tuple](db: DbConn; sql: string; params: T): seq[ResultRow]</a></li>
 <li><a class="reference" href="#all%2CSqlStatement%2CT" title="all[T: tuple](statement: SqlStatement; params: T): seq[ResultRow]">all[T: tuple](statement: SqlStatement; params: T): seq[ResultRow]</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">backupDatabase
+  <li><a class="reference" href="#backupDatabase%2CDbConn%2CDbConn" title="backupDatabase(destination, source: DbConn)">backupDatabase(destination, source: DbConn)</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">changes
@@ -197,6 +209,10 @@
 <li><a class="reference" href="#fromDb%2CDbValue%2Ctypedesc%5BOption%5BT%5D%5D" title="fromDb[T](value: DbValue; _: typedesc[Option[T]]): Option[T]">fromDb[T](value: DbValue; _: typedesc[Option[T]]): Option[T]</a></li>
 
 </ul>
+<ul class="simple nested-toc-section">interrupt
+  <li><a class="reference" href="#interrupt%2CDbConn" title="interrupt(db: DbConn)">interrupt(db: DbConn)</a></li>
+
+</ul>
 <ul class="simple nested-toc-section">isAlive
   <li><a class="reference" href="#isAlive%2CSqlStatement" title="isAlive(statement: SqlStatement): bool">isAlive(statement: SqlStatement): bool</a></li>
 
@@ -211,6 +227,7 @@
 </ul>
 <ul class="simple nested-toc-section">isReadonly
   <li><a class="reference" href="#isReadonly%2CDbConn" title="isReadonly(db: DbConn): bool">isReadonly(db: DbConn): bool</a></li>
+<li><a class="reference" href="#isReadonly%2CSqlStatement" title="isReadonly(statement: SqlStatement): bool">isReadonly(statement: SqlStatement): bool</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">lastInsertRowId
@@ -237,8 +254,28 @@
 <li><a class="reference" href="#openDatabase%2Cstring%2COpenOptions" title="openDatabase(path: string; options: OpenOptions): DbConn">openDatabase(path: string; options: OpenOptions): DbConn</a></li>
 
 </ul>
+<ul class="simple nested-toc-section">quickCheck
+  <li><a class="reference" href="#quickCheck%2CDbConn" title="quickCheck(db: DbConn): seq[string]">quickCheck(db: DbConn): seq[string]</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">remainingPages
+  <li><a class="reference" href="#remainingPages%2CBackup" title="remainingPages(backup: Backup): int32">remainingPages(backup: Backup): int32</a></li>
+
+</ul>
 <ul class="simple nested-toc-section">rows
   <li><a class="reference" href="#rows%2CDbConn%2Cstring%2Cvarargs%5BDbValue%2CtoDb%5D" title="rows(db: DbConn; sql: string; params: varargs[DbValue, toDb]): seq[seq[DbValue]]">rows(db: DbConn; sql: string; params: varargs[DbValue, toDb]): seq[seq[DbValue]]</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">sqliteCompileOptions
+  <li><a class="reference" href="#sqliteCompileOptions" title="sqliteCompileOptions(): seq[string]">sqliteCompileOptions(): seq[string]</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">sqliteVersion
+  <li><a class="reference" href="#sqliteVersion" title="sqliteVersion(): string">sqliteVersion(): string</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">step
+  <li><a class="reference" href="#step%2CBackup%2Cint32" title="step(backup: Backup; pages: int32 = -1): BackupStep">step(backup: Backup; pages: int32 = -1): BackupStep</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">stmt
@@ -252,6 +289,14 @@
 <li><a class="reference" href="#toDb%2CT_2" title="toDb[T: SomeFloat](val: T): DbValue">toDb[T: SomeFloat](val: T): DbValue</a></li>
 <li><a class="reference" href="#toDb%2CT_3" title="toDb[T: string](val: T): DbValue">toDb[T: string](val: T): DbValue</a></li>
 <li><a class="reference" href="#toDb%2CT_6" title="toDb[T: type(nil)](val: T): DbValue">toDb[T: type(nil)](val: T): DbValue</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">totalChanges
+  <li><a class="reference" href="#totalChanges%2CDbConn" title="totalChanges(db: DbConn): int64">totalChanges(db: DbConn): int64</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">totalPages
+  <li><a class="reference" href="#totalPages%2CBackup" title="totalPages(backup: Backup): int32">totalPages(backup: Backup): int32</a></li>
 
 </ul>
 <ul class="simple nested-toc-section">unpack
@@ -304,6 +349,23 @@
       <ul class="simple nested-toc-section">transaction
   <li><a class="reference" href="#transaction.t%2CDbConn%2Cuntyped" title="transaction(db: DbConn; body: untyped)">transaction(db: DbConn; body: untyped)</a></li>
 <li><a class="reference" href="#transaction.t%2CDbConn%2CTransactionMode%2Cuntyped" title="transaction(db: DbConn; mode: TransactionMode; body: untyped)">transaction(db: DbConn; mode: TransactionMode; body: untyped)</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">withBackup
+  <li><a class="reference" href="#withBackup.t%2Cuntyped%2Cuntyped%2Cuntyped" title="withBackup(destination, source: untyped; body: untyped)">withBackup(destination, source: untyped; body: untyped)</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">withDatabase
+  <li><a class="reference" href="#withDatabase.t%2Cuntyped%2Cuntyped" title="withDatabase(path: untyped; body: untyped)">withDatabase(path: untyped; body: untyped)</a></li>
+<li><a class="reference" href="#withDatabase.t%2Cuntyped%2Cuntyped%2Cuntyped" title="withDatabase(path: untyped; options: untyped; body: untyped)">withDatabase(path: untyped; options: untyped; body: untyped)</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">withDeadline
+  <li><a class="reference" href="#withDeadline.t%2CDbConn%2CNatural%2Cuntyped" title="withDeadline(db: DbConn; timeoutMs: Natural; body: untyped)">withDeadline(db: DbConn; timeoutMs: Natural; body: untyped)</a></li>
+
+</ul>
+<ul class="simple nested-toc-section">withStatement
+  <li><a class="reference" href="#withStatement.t%2Cuntyped%2Cuntyped%2Cuntyped" title="withStatement(connection: untyped; sql: untyped; body: untyped)">withStatement(connection: untyped; sql: untyped; body: untyped)</a></li>
 
 </ul>
 
@@ -387,9 +449,13 @@
     <span class="Identifier">echo</span> <span class="Identifier">fromDb</span><span class="Punctuation">(</span><span class="Identifier">row</span><span class="Punctuation">[</span><span class="DecNumber">0</span><span class="Punctuation">]</span><span class="Punctuation">,</span> <span class="Identifier">Option</span><span class="Punctuation">[</span><span class="Identifier">string</span><span class="Punctuation">]</span><span class="Punctuation">)</span> <span class="Comment"># Will work even if the db value is NULL</span>
 
 <span class="Comment"># Example of reading a single value. In this case, 'value' will be of type `Option[DbValue]`.</span>
-<span class="Keyword">let</span> <span class="Identifier">value</span> <span class="Operator">=</span> <span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">one</span><span class="Punctuation">(</span><span class="StringLit">&quot;SELECT age FROM Person WHERE name = ?&quot;</span><span class="Punctuation">,</span> <span class="StringLit">&quot;John Doe&quot;</span><span class="Punctuation">)</span>
+<span class="Keyword">let</span> <span class="Identifier">value</span> <span class="Operator">=</span> <span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">value</span><span class="Punctuation">(</span><span class="StringLit">&quot;SELECT age FROM Person WHERE name = ?&quot;</span><span class="Punctuation">,</span> <span class="StringLit">&quot;John Doe&quot;</span><span class="Punctuation">)</span>
 <span class="Keyword">if</span> <span class="Identifier">value</span><span class="Operator">.</span><span class="Identifier">isSome</span><span class="Punctuation">:</span>
     <span class="Identifier">echo</span> <span class="Identifier">fromDb</span><span class="Punctuation">(</span><span class="Identifier">value</span><span class="Operator">.</span><span class="Identifier">get</span><span class="Punctuation">,</span> <span class="Identifier">int</span><span class="Punctuation">)</span> <span class="Comment"># Prints age of John Doe</span></pre>
+<h1><a class="toc-backref" id="scoped-resources-deadlines-and-online-backups" href="#scoped-resources-deadlines-and-online-backups">Scoped resources, deadlines, and online backups</a></h1><p><tt class="docutils literal"><span class="pre">withDatabase</span></tt> injects a <tt class="docutils literal"><span class="pre">db</span></tt> variable and closes it on every exit path. <tt class="docutils literal"><span class="pre">withStatement</span></tt> similarly injects a <tt class="docutils literal"><span class="pre">statement</span></tt> variable and finalizes it. Use <tt class="docutils literal"><span class="pre">withDeadline(db, timeoutMs)</span></tt> to interrupt long-running SQL after a monotonic deadline. SQLite can roll back an interrupted write transaction; inspect <tt class="docutils literal"><span class="pre">SqliteError.primaryCode</span></tt> for <tt class="docutils literal"><span class="pre">SQLITE_INTERRUPT</span></tt>.</p>
+<p><tt class="docutils literal"><span class="pre">backupDatabase(destination, source)</span></tt> copies the source main database into the destination. For incremental transfers, <tt class="docutils literal"><span class="pre">withBackup</span></tt> injects a <tt class="docutils literal"><span class="pre">backup</span></tt> handle; call <tt class="docutils literal"><span class="pre">step</span></tt> with a positive page count and inspect <tt class="docutils literal"><span class="pre">remainingPages</span></tt> and <tt class="docutils literal"><span class="pre">totalPages</span></tt> after each step. The destination cannot be used for other operations until the scope exits.</p>
+<p>One connection and its statements must not be used concurrently across threads. Coordinate <tt class="docutils literal"><span class="pre">interrupt</span></tt> with connection <tt class="docutils literal"><span class="pre">close</span></tt> when requesting cancellation from another thread. Extensions are trusted native code and require <tt class="docutils literal"><span class="pre">OpenOptions.allowExtensions</span></tt> to be enabled explicitly.</p>
+
 <h1><a class="toc-backref" id="inserting-data-in-bulk" href="#inserting-data-in-bulk">Inserting data in bulk</a></h1><p>The <a class="reference external" href="#exec,DbConn,string,varargs[DbValue,toDb]">exec</a> procedure works fine for inserting single rows, but it gets awkward when inserting many rows. For this purpose the <a class="reference external" href="#execMany,DbConn,string,seq[seq[DbValue]]">execMany</a> procedure can be used instead. It executes the same SQL repeatedly, but with different parameters each time.</p>
 <pre class="listing"><span class="Keyword">let</span> <span class="Identifier">parameters</span> <span class="Operator">=</span> <span class="Punctuation">[</span>
     <span class="Punctuation">(</span><span class="Identifier">name</span><span class="Punctuation">:</span> <span class="StringLit">&quot;Person 1&quot;</span><span class="Punctuation">,</span> <span class="Identifier">age</span><span class="Punctuation">:</span> <span class="DecNumber">17</span><span class="Punctuation">)</span><span class="Punctuation">,</span>
@@ -465,7 +531,24 @@
 <div class="section" id="7">
   <h1><a class="toc-backref" href="#7">Types</a></h1>
   <dl class="item">
-    <div id="DbConn">
+    <div id="Backup">
+  <dt><pre><a href="#Backup"><span class="Identifier">Backup</span></a> <span class="Other">=</span> <span class="Keyword">distinct</span> <span class="Identifier">BackupImpl</span></pre></dt>
+  <dd>
+
+    A scoped SQLite online backup handle.
+
+  </dd>
+</div>
+<div id="BackupStep">
+  <dt><pre><a href="#BackupStep"><span class="Identifier">BackupStep</span></a> {.<span class="Identifier">pure</span>.} <span class="Other">=</span> <span class="Keyword">enum</span>
+  <span class="Identifier">more</span><span class="Other">,</span> <span class="Identifier">done</span><span class="Other">,</span> <span class="Identifier">busy</span><span class="Other">,</span> <span class="Identifier">locked</span></pre></dt>
+  <dd>
+
+
+
+  </dd>
+</div>
+<div id="DbConn">
   <dt><pre><a href="#DbConn"><span class="Identifier">DbConn</span></a> <span class="Other">=</span> <span class="Keyword">distinct</span> <span class="Identifier">DbConnImpl</span></pre></dt>
   <dd>
 
@@ -529,7 +612,10 @@ Enum of all possible value types in a SQLite database.
                              <span class="Comment">## disables the busy timeout.</span>
   <span class="Identifier">uriFilename</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span>         <span class="Comment">## Interpret a ``file:`` path as an SQLite URI.</span>
   <span class="Identifier">noFollow</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span>            <span class="Comment">## Reject database paths containing symbolic links.</span>
-  <span class="Identifier">securityProfile</span><span class="Operator">*</span><span class="Other">:</span> <a href="#SecurityProfile"><span class="Identifier">SecurityProfile</span></a> <span class="Comment">## SQLite security configuration.</span></pre></dt>
+  <span class="Identifier">securityProfile</span><span class="Operator">*</span><span class="Other">:</span> <a href="#SecurityProfile"><span class="Identifier">SecurityProfile</span></a> <span class="Comment">## SQLite security configuration.</span>
+  <span class="Identifier">allowExtensions</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">bool</span>     <span class="Comment">## Permit explicit loading of trusted native extensions.</span>
+  <span class="Identifier">maxSqlBytes</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int64</span>        <span class="Comment">## Optional SQL text byte limit; zero keeps SQLite's default.</span>
+  <span class="Identifier">maxVmOps</span><span class="Operator">*</span><span class="Other">:</span> <span class="Identifier">int64</span>           <span class="Comment">## Optional virtual-machine operation limit per statement.</span></pre></dt>
   <dd>
 
     Options for opening a database connection. Start with <tt class="docutils literal"><span class="pre">defaultOpenOptions</span></tt> when changing only selected fields.
@@ -571,7 +657,7 @@ Enum of all possible value types in a SQLite database.
 <div id="SqliteOperation">
   <dt><pre><a href="#SqliteOperation"><span class="Identifier">SqliteOperation</span></a> {.<span class="Identifier">pure</span>.} <span class="Other">=</span> <span class="Keyword">enum</span>
   <span class="Identifier">validation</span><span class="Other">,</span> <span class="Identifier">conversion</span><span class="Other">,</span> <span class="Identifier">openDatabase</span><span class="Other">,</span> <span class="Identifier">closeDatabase</span><span class="Other">,</span> <span class="Identifier">prepare</span><span class="Other">,</span> <span class="Identifier">binding</span><span class="Other">,</span>
-  <span class="Identifier">execute</span><span class="Other">,</span> <span class="Identifier">transaction</span><span class="Other">,</span> <span class="Identifier">loadExtension</span></pre></dt>
+  <span class="Identifier">execute</span><span class="Other">,</span> <span class="Identifier">transaction</span><span class="Other">,</span> <span class="Identifier">loadExtension</span><span class="Other">,</span> <span class="Identifier">backup</span></pre></dt>
   <dd>
 
     Stable categories describing which library operation failed.
@@ -612,7 +698,8 @@ Enum of all possible value types in a SQLite database.
     <div id="defaultOpenOptions">
   <dt><pre><a href="#defaultOpenOptions"><span class="Identifier">defaultOpenOptions</span></a> <span class="Other">=</span> <span class="Other">(</span><span class="Identifier">mode</span><span class="Other">:</span> <span class="DecNumber">OpenMode.readWriteCreate</span><span class="Other">,</span> <span class="Identifier">cacheSize</span><span class="Other">:</span> <span class="DecNumber">100</span><span class="Other">,</span>
                       <span class="Identifier">busyTimeoutMs</span><span class="Other">:</span> <span class="DecNumber">0</span><span class="Other">,</span> <span class="Identifier">uriFilename</span><span class="Other">:</span> <span class="DecNumber">false</span><span class="Other">,</span> <span class="Identifier">noFollow</span><span class="Other">:</span> <span class="DecNumber">false</span><span class="Other">,</span>
-                      <span class="Identifier">securityProfile</span><span class="Other">:</span> <span class="DecNumber">SecurityProfile.normal</span><span class="Other">)</span></pre></dt>
+                      <span class="Identifier">securityProfile</span><span class="Other">:</span> <span class="DecNumber">SecurityProfile.normal</span><span class="Other">,</span>
+                      <span class="Identifier">allowExtensions</span><span class="Other">:</span> <span class="DecNumber">false</span><span class="Other">,</span> <span class="Identifier">maxSqlBytes</span><span class="Other">:</span> <span class="DecNumber">0</span><span class="Other">,</span> <span class="Identifier">maxVmOps</span><span class="Other">:</span> <span class="DecNumber">0</span><span class="Other">)</span></pre></dt>
   <dd>
 
     Compatibility defaults used by the convenience <tt class="docutils literal"><span class="pre">openDatabase</span></tt> overload. Copy this value before changing selected options.
@@ -702,6 +789,19 @@ Enum of all possible value types in a SQLite database.
   <dd>
 
     Executes <tt class="docutils literal"><span class="pre"><span class="Identifier">statement</span></span></tt> using named <tt class="docutils literal"><span class="pre">:name</span></tt> parameters and returns all rows.
+
+  </dd>
+</div>
+
+</div>
+<div id="backupDatabase-procs-all">
+  <div id="backupDatabase,DbConn,DbConn">
+  <dt><pre><span class="Keyword">proc</span> <a href="#backupDatabase%2CDbConn%2CDbConn"><span class="Identifier">backupDatabase</span></a><span class="Other">(</span><span class="Identifier">destination</span><span class="Other">,</span> <span class="Identifier">source</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">)</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteUsageError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Copy the source main database into the destination main database. Busy and locked results are raised with structured SQLite error codes.
 
   </dd>
 </div>
@@ -913,9 +1013,20 @@ Enum of all possible value types in a SQLite database.
 </div>
 
 </div>
+<div id="interrupt-procs-all">
+  <div id="interrupt,DbConn">
+  <dt><pre><span class="Keyword">proc</span> <a href="#interrupt%2CDbConn"><span class="Identifier">interrupt</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Request interruption of currently running statements. The caller must synchronize this call with <tt class="docutils literal"><span class="pre"><span class="Identifier">close</span></span></tt>; all other connection operations remain single-threaded. SQLite reports interrupted execution with <tt class="docutils literal"><span class="pre">SQLITE_INTERRUPT</span></tt> in <tt class="docutils literal"><span class="pre">SqliteError.primaryCode</span></tt>.
+
+  </dd>
+</div>
+
+</div>
 <div id="isAlive-procs-all">
   <div id="isAlive,SqlStatement">
-  <dt><pre><span class="Keyword">proc</span> <a href="#isAlive%2CSqlStatement"><span class="Identifier">isAlive</span></a><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">noSideEffect</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+  <dt><pre><span class="Keyword">proc</span> <a href="#isAlive%2CSqlStatement"><span class="Identifier">isAlive</span></a><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">]</span><span class="Other">,</span>
     <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
 
@@ -927,8 +1038,8 @@ Enum of all possible value types in a SQLite database.
 </div>
 <div id="isInTransaction-procs-all">
   <div id="isInTransaction,DbConn">
-  <dt><pre><span class="Keyword">proc</span> <a href="#isInTransaction%2CDbConn"><span class="Identifier">isInTransaction</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">noSideEffect</span><span class="Other">,</span>
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#isInTransaction%2CDbConn"><span class="Identifier">isInTransaction</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
 
 
@@ -939,7 +1050,7 @@ Enum of all possible value types in a SQLite database.
 </div>
 <div id="isOpen-procs-all">
   <div id="isOpen,DbConn">
-  <dt><pre><span class="Keyword">proc</span> <a href="#isOpen%2CDbConn"><span class="Identifier">isOpen</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">noSideEffect</span><span class="Other">,</span> <span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+  <dt><pre><span class="Keyword">proc</span> <a href="#isOpen%2CDbConn"><span class="Identifier">isOpen</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span class="Identifier">inline</span><span class="Other">,</span> <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
                                 <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
 
@@ -961,6 +1072,15 @@ Enum of all possible value types in a SQLite database.
 <span class="Identifier">doAssert</span> <span class="Keyword">not</span> <span class="Identifier">db</span><span class="Operator">.</span><span class="Identifier">isReadonly</span>
 <span class="Keyword">let</span> <span class="Identifier">db2</span> <span class="Operator">=</span> <span class="Identifier">openDatabase</span><span class="Punctuation">(</span><span class="StringLit">&quot;:memory:&quot;</span><span class="Punctuation">,</span> <span class="Identifier">dbRead</span><span class="Punctuation">)</span>
 <span class="Identifier">doAssert</span> <span class="Identifier">db2</span><span class="Operator">.</span><span class="Identifier">isReadonly</span></pre>
+
+  </dd>
+</div>
+<div id="isReadonly,SqlStatement">
+  <dt><pre><span class="Keyword">proc</span> <a href="#isReadonly%2CSqlStatement"><span class="Identifier">isReadonly</span></a><span class="Other">(</span><span class="Identifier">statement</span><span class="Other">:</span> <a href="#SqlStatement"><span class="Identifier">SqlStatement</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">bool</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Whether SQLite considers this prepared statement read-only.
 
   </dd>
 </div>
@@ -994,10 +1114,11 @@ Enum of all possible value types in a SQLite database.
 <div id="loadExtension-procs-all">
   <div id="loadExtension,DbConn,string">
   <dt><pre><span class="Keyword">proc</span> <a href="#loadExtension%2CDbConn%2Cstring"><span class="Identifier">loadExtension</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">path</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
 
-    Load an SQLite extension. Will raise a <tt class="docutils literal"><span class="pre">SqliteError</span></tt> exception if loading fails.
+    Load a trusted native extension when <tt class="docutils literal"><span class="pre">allowExtensions</span></tt> was enabled at open time. The C loading capability is disabled after each attempt.
 
   </dd>
 </div>
@@ -1079,6 +1200,31 @@ Enum of all possible value types in a SQLite database.
 </div>
 
 </div>
+<div id="quickCheck-procs-all">
+  <div id="quickCheck,DbConn">
+  <dt><pre><span class="Keyword">proc</span> <a href="#quickCheck%2CDbConn"><span class="Identifier">quickCheck</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">string</span><span class="Other">]</span> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">,</span> <span class="Identifier">Exception</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">RootEffect</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Run SQLite's quick integrity check. An empty result means SQLite reported <tt class="docutils literal"><span class="pre">ok</span></tt>; otherwise each entry is a diagnostic line.
+
+  </dd>
+</div>
+
+</div>
+<div id="remainingPages-procs-all">
+  <div id="remainingPages,Backup">
+  <dt><pre><span class="Keyword">proc</span> <a href="#remainingPages%2CBackup"><span class="Identifier">remainingPages</span></a><span class="Other">(</span><span class="Identifier">backup</span><span class="Other">:</span> <a href="#Backup"><span class="Identifier">Backup</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int32</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Pages still to copy after the most recent backup step.
+
+  </dd>
+</div>
+
+</div>
 <div id="rows-procs-all">
   <div id="rows,DbConn,string,varargs[DbValue,toDb]">
   <dt><pre><span class="Keyword">proc</span> <a href="#rows%2CDbConn%2Cstring%2Cvarargs%5BDbValue%2CtoDb%5D"><span class="Identifier">rows</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">params</span><span class="Other">:</span> <span class="Identifier">varargs</span><span class="Other">[</span><a href="#DbValue"><span class="Identifier">DbValue</span></a><span class="Other">,</span> <span class="Identifier">toDb</span><span class="Other">]</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span>
@@ -1091,6 +1237,40 @@ Enum of all possible value types in a SQLite database.
 </div>
 
 
+
+  </dd>
+</div>
+
+</div>
+<div id="sqliteCompileOptions-procs-all">
+  <div id="sqliteCompileOptions">
+  <dt><pre><span class="Keyword">proc</span> <a href="#sqliteCompileOptions"><span class="Identifier">sqliteCompileOptions</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">seq</span><span class="Other">[</span><span class="Identifier">string</span><span class="Other">]</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Compile-time options reported by the bundled SQLite library.
+
+  </dd>
+</div>
+
+</div>
+<div id="sqliteVersion-procs-all">
+  <div id="sqliteVersion">
+  <dt><pre><span class="Keyword">proc</span> <a href="#sqliteVersion"><span class="Identifier">sqliteVersion</span></a><span class="Other">(</span><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">string</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Version of the SQLite library compiled into the application.
+
+  </dd>
+</div>
+
+</div>
+<div id="step-procs-all">
+  <div id="step,Backup,int32">
+  <dt><pre><span class="Keyword">proc</span> <a href="#step%2CBackup%2Cint32"><span class="Identifier">step</span></a><span class="Other">(</span><span class="Identifier">backup</span><span class="Other">:</span> <a href="#Backup"><span class="Identifier">Backup</span></a><span class="Other">;</span> <span class="Identifier">pages</span><span class="Other">:</span> <span class="Identifier">int32</span> <span class="Other">=</span> <span class="DecNumber">-1</span><span class="Other">)</span><span class="Other">:</span> <a href="#BackupStep"><span class="Identifier">BackupStep</span></a> {.
+    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">,</span> <span class="Identifier">SqliteError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Copy at most <tt class="docutils literal"><span class="pre">pages</span></tt> pages, or all pages when <tt class="docutils literal"><span class="pre">pages</span></tt> is -1. <tt class="docutils literal"><span class="pre">busy</span></tt> and <tt class="docutils literal"><span class="pre">locked</span></tt> can be retried after the caller resolves lock contention. Other SQLite errors raise <tt class="docutils literal"><span class="pre">SqliteError</span></tt>.
 
   </dd>
 </div>
@@ -1154,6 +1334,30 @@ Enum of all possible value types in a SQLite database.
   <dd>
 
     Convert a nil literal to a DbValue.
+
+  </dd>
+</div>
+
+</div>
+<div id="totalChanges-procs-all">
+  <div id="totalChanges,DbConn">
+  <dt><pre><span class="Keyword">proc</span> <a href="#totalChanges%2CDbConn"><span class="Identifier">totalChanges</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int64</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+                                       <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Number of rows changed by this connection since it was opened.
+
+  </dd>
+</div>
+
+</div>
+<div id="totalPages-procs-all">
+  <div id="totalPages,Backup">
+  <dt><pre><span class="Keyword">proc</span> <a href="#totalPages%2CBackup"><span class="Identifier">totalPages</span></a><span class="Other">(</span><span class="Identifier">backup</span><span class="Other">:</span> <a href="#Backup"><span class="Identifier">Backup</span></a><span class="Other">)</span><span class="Other">:</span> <span class="Identifier">int32</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">SqliteUsageError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dd>
+
+    Source page count observed by the most recent backup step.
 
   </dd>
 </div>
@@ -1330,6 +1534,58 @@ Enum of all possible value types in a SQLite database.
 </div>
 
 </div>
+<div id="withBackup-templates-all">
+  <div id="withBackup.t,untyped,untyped,untyped">
+  <dt><pre><span class="Keyword">template</span> <a href="#withBackup.t%2Cuntyped%2Cuntyped%2Cuntyped"><span class="Identifier">withBackup</span></a><span class="Other">(</span><span class="Identifier">destination</span><span class="Other">,</span> <span class="Identifier">source</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Keep both connections open and finish the backup on every exit path. The <tt class="docutils literal"><span class="pre">backup</span></tt> variable is available inside <tt class="docutils literal"><span class="pre">body</span></tt>.
+
+  </dd>
+</div>
+
+</div>
+<div id="withDatabase-templates-all">
+  <div id="withDatabase.t,untyped,untyped">
+  <dt><pre><span class="Keyword">template</span> <a href="#withDatabase.t%2Cuntyped%2Cuntyped"><span class="Identifier">withDatabase</span></a><span class="Other">(</span><span class="Identifier">path</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Open a database and close it on normal exit, exception, or early return.
+
+  </dd>
+</div>
+<div id="withDatabase.t,untyped,untyped,untyped">
+  <dt><pre><span class="Keyword">template</span> <a href="#withDatabase.t%2Cuntyped%2Cuntyped%2Cuntyped"><span class="Identifier">withDatabase</span></a><span class="Other">(</span><span class="Identifier">path</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">;</span> <span class="Identifier">options</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Open a database with options and close it on every exit path.
+
+  </dd>
+</div>
+
+</div>
+<div id="withDeadline-templates-all">
+  <div id="withDeadline.t,DbConn,Natural,untyped">
+  <dt><pre><span class="Keyword">template</span> <a href="#withDeadline.t%2CDbConn%2CNatural%2Cuntyped"><span class="Identifier">withDeadline</span></a><span class="Other">(</span><span class="Identifier">db</span><span class="Other">:</span> <a href="#DbConn"><span class="Identifier">DbConn</span></a><span class="Other">;</span> <span class="Identifier">timeoutMs</span><span class="Other">:</span> <span class="Identifier">Natural</span><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Run <tt class="docutils literal"><span class="pre">body</span></tt> with a monotonic execution deadline. The progress handler interrupts long-running SQLite work after the deadline. Its granularity is roughly 1000 SQLite virtual-machine instructions. Do not re-enter the same connection from a SQLite progress callback.
+
+  </dd>
+</div>
+
+</div>
+<div id="withStatement-templates-all">
+  <div id="withStatement.t,untyped,untyped,untyped">
+  <dt><pre><span class="Keyword">template</span> <a href="#withStatement.t%2Cuntyped%2Cuntyped%2Cuntyped"><span class="Identifier">withStatement</span></a><span class="Other">(</span><span class="Identifier">connection</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">;</span> <span class="Identifier">sql</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">;</span> <span class="Identifier">body</span><span class="Other">:</span> <span class="Identifier">untyped</span><span class="Other">)</span></pre></dt>
+  <dd>
+
+    Prepare a statement and finalize it on every exit path.
+
+  </dd>
+</div>
+
+</div>
 
   </dl>
 </div>
@@ -1340,7 +1596,7 @@ Enum of all possible value types in a SQLite database.
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-08-25 20:34:43 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated from source</small>
       </div>
     </div>
   </div>

@@ -1,6 +1,6 @@
 ## .. include:: ./nim_sqlite/private/documentation.rst
 
-import std / [options, typetraits, sequtils]
+import std / [options, typetraits, sequtils, monotimes, times]
 from pkg / sqlite3_abi as abi import nil
 import nim_sqlite / private / stmtcache
 
@@ -18,6 +18,14 @@ type
         cache: StmtCache
         activeOperations: int
         transactionSerial: uint64
+        deadlineScope: DeadlineScope
+        backupDestinationActive: bool
+        allowExtensions: bool
+        ownerThreadId: int
+
+    DeadlineScope = ref object
+        expiresAt: MonoTime
+        previous: DeadlineScope
 
     DbConn* = distinct DbConnImpl ## Encapsulates a database connection.
 
@@ -27,6 +35,16 @@ type
         inUse: bool
 
     SqlStatement* = distinct SqlStatementImpl ## A prepared SQL statement.
+
+    BackupImpl = ref object
+        handle: ptr abi.sqlite3_backup
+        destination: DbConn
+        source: DbConn
+
+    Backup* = distinct BackupImpl ## A scoped SQLite online backup handle.
+
+    BackupStep* {.pure.} = enum
+        more, done, busy, locked
 
     DbMode* = enum
         dbRead,
@@ -57,6 +75,9 @@ type
         uriFilename*: bool ## Interpret a ``file:`` path as an SQLite URI.
         noFollow*: bool ## Reject database paths containing symbolic links.
         securityProfile*: SecurityProfile ## SQLite security configuration.
+        allowExtensions*: bool ## Permit explicit loading of trusted native extensions.
+        maxSqlBytes*: int64 ## Optional SQL text byte limit; zero keeps SQLite's default.
+        maxVmOps*: int64 ## Optional virtual-machine operation limit per statement.
 
     TransactionMode* {.pure.} = enum
         ## Controls how an outermost ``transaction`` acquires SQLite locks.
@@ -77,6 +98,7 @@ type
         execute,
         transaction,
         loadExtension
+        backup
 
     SqliteError* = object of CatchableError
         ## Raised for SQLite failures and library validation errors.
@@ -146,9 +168,9 @@ const defaultOpenOptions* = OpenOptions(
     ## overload. Copy this value before changing selected options.
 
 # Forward declarations
-proc isInTransaction*(db: DbConn): bool {.noSideEffect.}
-proc isOpen*(db: DbConn): bool {.noSideEffect, inline.}
-proc isAlive*(statement: SqlStatement): bool {.noSideEffect.}
+proc isInTransaction*(db: DbConn): bool
+proc isOpen*(db: DbConn): bool {.inline.}
+proc isAlive*(statement: SqlStatement): bool
 
 template handle(db: DbConn): ptr abi.sqlite3 = DbConnImpl(db).handle
 template handle(statement: SqlStatement): ptr abi.sqlite3_stmt = SqlStatementImpl(statement).handle
@@ -160,6 +182,12 @@ template hasCache(db: DbConn): bool = db.cache.capacity > 0
 template assertCanUseDb(db: DbConn) =
     if DbConnImpl(db).isNil or db.handle.isNil:
         raise newException(SqliteUsageError, "Database is closed")
+    if DbConnImpl(db).ownerThreadId != getThreadId():
+        raise newException(SqliteUsageError,
+            "Database connection belongs to another thread")
+    if DbConnImpl(db).backupDestinationActive:
+        raise newException(SqliteUsageError,
+            "Backup destination cannot be used while backup is active")
 
 template assertCanUseStatement(statement: SqlStatement, busyOk: static[bool] = false) =
     if SqlStatementImpl(statement).isNil or statement.handle.isNil:
@@ -168,6 +196,9 @@ template assertCanUseStatement(statement: SqlStatement, busyOk: static[bool] = f
     if not statement.db.isOpen:
         raise newException(SqliteUsageError,
             "Statement cannot be used because the database connection has been closed")
+    if DbConnImpl(statement.db).backupDestinationActive:
+        raise newException(SqliteUsageError,
+            "Backup destination cannot be used while backup is active")
     when not busyOk:
         if SqlStatementImpl(statement).inUse:
             raise newException(SqliteUsageError,
@@ -966,6 +997,9 @@ proc close*(db: DbConn) =
     ## raises ``SqliteUsageError``.
     if not db.isOpen:
         return
+    if DbConnImpl(db).ownerThreadId != getThreadId():
+        raise newException(SqliteUsageError,
+            "Database connection belongs to another thread")
     if DbConnImpl(db).activeOperations != 0:
         raise newException(SqliteUsageError,
             "Database cannot be closed while an operation is active")
@@ -973,6 +1007,59 @@ proc close*(db: DbConn) =
     let rc = abi.sqlite3_close_v2(db.handle)
     db.checkOk(rc, SqliteOperation.closeDatabase)
     DbConnImpl(db).handle = nil
+
+proc interrupt*(db: DbConn) =
+    ## Request interruption of currently running statements. The caller must
+    ## synchronize this call with `close`; all other connection operations
+    ## remain single-threaded. SQLite reports interrupted execution with
+    ## ``SQLITE_INTERRUPT`` in ``SqliteError.primaryCode``.
+    if DbConnImpl(db).isNil or db.handle.isNil:
+        raise newException(SqliteUsageError, "Database is closed")
+    abi.sqlite3_interrupt(db.handle)
+
+proc deadlineProgress(userData: pointer): cint {.cdecl.} =
+    let scope = cast[DeadlineScope](userData)
+    if getMonoTime() >= scope.expiresAt: 1 else: 0
+
+proc beginDeadline(db: DbConn, timeoutMs: Natural): DeadlineScope =
+    if int64(timeoutMs) > high(int64) div 1_000_000:
+        raise newSqliteError("Deadline is out of range.",
+            SqliteOperation.validation)
+    db.beginOperation()
+    let previous = DbConnImpl(db).deadlineScope
+    var expiresAt = getMonoTime() + initDuration(milliseconds = timeoutMs)
+    if not previous.isNil and previous.expiresAt < expiresAt:
+        expiresAt = previous.expiresAt
+    result = DeadlineScope(
+        expiresAt: expiresAt,
+        previous: previous)
+    DbConnImpl(db).deadlineScope = result
+    abi.sqlite3_progress_handler(db.handle, 1000, deadlineProgress,
+        cast[pointer](result))
+
+proc endDeadline(db: DbConn, scope: DeadlineScope) =
+    doAssert DbConnImpl(db).deadlineScope == scope,
+        "Deadline scopes must be exited in reverse order"
+    DbConnImpl(db).deadlineScope = scope.previous
+    if scope.previous.isNil:
+        abi.sqlite3_progress_handler(db.handle, 0, nil, nil)
+    else:
+        abi.sqlite3_progress_handler(db.handle, 1000, deadlineProgress,
+            cast[pointer](scope.previous))
+    db.endOperation()
+
+template withDeadline*(db: DbConn, timeoutMs: Natural, body: untyped) =
+    ## Run ``body`` with a monotonic execution deadline. The progress handler
+    ## interrupts long-running SQLite work after the deadline. Its granularity
+    ## is roughly 1000 SQLite virtual-machine instructions. Do not re-enter
+    ## the same connection from a SQLite progress callback.
+    block:
+        let scopedDb = db
+        let scope = beginDeadline(scopedDb, timeoutMs)
+        try:
+            body
+        finally:
+            endDeadline(scopedDb, scope)
 
 proc lastInsertRowId*(db: DbConn): int64 =
     ## Get the row id of the last inserted row.
@@ -993,6 +1080,33 @@ proc changes*(db: DbConn): int64 =
     assertCanUseDb db
     abi.sqlite3_changes64(db.handle)
 
+proc totalChanges*(db: DbConn): int64 =
+    ## Number of rows changed by this connection since it was opened.
+    assertCanUseDb db
+    abi.sqlite3_total_changes64(db.handle)
+
+proc quickCheck*(db: DbConn): seq[string] =
+    ## Run SQLite's quick integrity check. An empty result means SQLite
+    ## reported ``ok``; otherwise each entry is a diagnostic line.
+    for row in db.all("PRAGMA quick_check"):
+        let message = row.values[0].fromDb(string)
+        if message != "ok":
+            result.add(message)
+
+proc sqliteVersion*(): string =
+    ## Version of the SQLite library compiled into the application.
+    $abi.sqlite3_libversion()
+
+proc sqliteCompileOptions*(): seq[string] =
+    ## Compile-time options reported by the bundled SQLite library.
+    var index: cint
+    while true:
+        let option = abi.sqlite3_compileoption_get(index)
+        if option.isNil:
+            break
+        result.add($option)
+        inc index
+
 proc isReadonly*(db: DbConn): bool =
     ## Returns true if ``db`` is in readonly mode.
     runnableExamples:
@@ -1012,6 +1126,10 @@ proc isOpen*(db: DbConn): bool {.inline.} =
         doAssert db.isOpen
         db.close()
         doAssert not db.isOpen
+    if not DbConnImpl(db).isNil and
+            DbConnImpl(db).ownerThreadId != getThreadId():
+        raise newException(SqliteUsageError,
+            "Database connection belongs to another thread")
     (not DbConnImpl(db).isNil) and (not db.handle.isNil)
 
 proc isInTransaction*(db: DbConn): bool =
@@ -1165,18 +1283,29 @@ proc finalize*(statement: SqlStatement): void =
     ## Finalizing while the statement is active raises ``SqliteUsageError``.
     if SqlStatementImpl(statement).isNil or statement.handle.isNil:
         return
+    if DbConnImpl(statement.db).ownerThreadId != getThreadId():
+        raise newException(SqliteUsageError,
+            "Database connection belongs to another thread")
+    if DbConnImpl(statement.db).backupDestinationActive:
+        raise newException(SqliteUsageError,
+            "Backup destination cannot be used while backup is active")
     if SqlStatementImpl(statement).inUse:
         raise newException(SqliteUsageError,
             "Statement cannot be finalized while an operation is active")
     discard abi.sqlite3_finalize(statement.handle)
     SqlStatementImpl(statement).handle = nil
 
+proc isReadonly*(statement: SqlStatement): bool =
+    ## Whether SQLite considers this prepared statement read-only.
+    assertCanUseStatement statement
+    abi.sqlite3_stmt_readonly(statement.handle) != 0
+
 proc isAlive*(statement: SqlStatement): bool =
     ## Returns true if ``statement`` can be executed. A statement whose database
     ## has been closed returns false, but still owns its handle until `finalize`
     ## is called.
     (not SqlStatementImpl(statement).isNil) and (not statement.handle.isNil) and
-        (not statement.db.handle.isNil)
+        statement.db.isOpen
 
 proc openDatabase*(path: string, options: OpenOptions): DbConn =
     ## Open a database connection using explicit options. ``readOnly`` and
@@ -1206,8 +1335,14 @@ proc openDatabase*(path: string, options: OpenOptions): DbConn =
         raise newSqliteError(
             "Busy timeout is out of range for SQLite.",
             SqliteOperation.validation)
+    for limit in [options.maxSqlBytes, options.maxVmOps]:
+        if limit < 0 or limit > int64(high(cint)):
+            raise newSqliteError("SQLite resource limit is out of range.",
+                SqliteOperation.validation)
 
     let db = new DbConnImpl
+    db.ownerThreadId = getThreadId()
+    db.allowExtensions = options.allowExtensions
     if options.cacheSize > 0:
         db.cache = initStmtCache(options.cacheSize)
     result = DbConn(db)
@@ -1240,6 +1375,12 @@ proc openDatabase*(path: string, options: OpenOptions): DbConn =
             result.configureBoolean(
                 abi.SQLITE_DBCONFIG_TRUSTED_SCHEMA, false,
                 SqliteOperation.openDatabase)
+        if options.maxSqlBytes > 0:
+            discard abi.sqlite3_limit(db.handle, abi.SQLITE_LIMIT_SQL_LENGTH,
+                cint(options.maxSqlBytes))
+        if options.maxVmOps > 0:
+            discard abi.sqlite3_limit(db.handle, abi.SQLITE_LIMIT_VDBE_OP,
+                cint(options.maxVmOps))
 
         result.exec("PRAGMA encoding = 'UTF-8'")
         result.exec("PRAGMA foreign_keys = ON")
@@ -1277,20 +1418,180 @@ proc openDatabase*(path: string, mode = dbReadWrite, cacheSize: Natural = 100): 
     options.cacheSize = cacheSize
     openDatabase(path, options)
 
+proc beginBackup(destination, source: DbConn): Backup =
+    if DbConnImpl(destination) == DbConnImpl(source):
+        raise newSqliteError("Backup source and destination must differ.",
+            SqliteOperation.validation)
+    destination.beginOperation()
+    try:
+        source.beginOperation()
+        try:
+            let state = BackupImpl(destination: destination, source: source)
+            let handle = abi.sqlite3_backup_init(destination.handle, "main",
+                source.handle, "main")
+            if handle.isNil:
+                raise newSqliteError(destination, SqliteOperation.backup,
+                    abi.sqlite3_errcode(destination.handle))
+            DbConnImpl(destination).backupDestinationActive = true
+            state.handle = handle
+            Backup(state)
+        except:
+            source.endOperation()
+            raise
+    except:
+        destination.endOperation()
+        raise
+
+proc finishBackup(backup: Backup) =
+    let state = BackupImpl(backup)
+    if state.isNil or state.handle.isNil:
+        return
+    let rc = abi.sqlite3_backup_finish(state.handle)
+    state.handle = nil
+    DbConnImpl(state.destination).backupDestinationActive = false
+    let error = if rc != abi.SQLITE_OK:
+            newSqliteError(state.destination, SqliteOperation.backup, rc)
+        else:
+            nil
+    state.source.endOperation()
+    state.destination.endOperation()
+    if not error.isNil:
+        raise error
+
+proc step*(backup: Backup, pages: int32 = -1): BackupStep =
+    ## Copy at most ``pages`` pages, or all pages when ``pages`` is -1.
+    ## ``busy`` and ``locked`` can be retried after the caller resolves lock
+    ## contention. Other SQLite errors raise ``SqliteError``.
+    let state = BackupImpl(backup)
+    if state.isNil or state.handle.isNil:
+        raise newException(SqliteUsageError, "Backup has been finished")
+    if pages == 0 or pages < -1:
+        raise newSqliteError("Backup page count must be positive or -1.",
+            SqliteOperation.validation)
+    let rc = abi.sqlite3_backup_step(state.handle, cint(pages))
+    case rc
+    of abi.SQLITE_OK: BackupStep.more
+    of abi.SQLITE_DONE: BackupStep.done
+    of abi.SQLITE_BUSY: BackupStep.busy
+    of abi.SQLITE_LOCKED: BackupStep.locked
+    else: raise newSqliteError(state.destination, SqliteOperation.backup, rc)
+
+proc remainingPages*(backup: Backup): int32 =
+    ## Pages still to copy after the most recent backup step.
+    let state = BackupImpl(backup)
+    if state.isNil or state.handle.isNil:
+        raise newException(SqliteUsageError, "Backup has been finished")
+    int32(abi.sqlite3_backup_remaining(state.handle))
+
+proc totalPages*(backup: Backup): int32 =
+    ## Source page count observed by the most recent backup step.
+    let state = BackupImpl(backup)
+    if state.isNil or state.handle.isNil:
+        raise newException(SqliteUsageError, "Backup has been finished")
+    int32(abi.sqlite3_backup_pagecount(state.handle))
+
+template withBackup*(destination, source: untyped, body: untyped) =
+    ## Keep both connections open and finish the backup on every exit path.
+    ## The ``backup`` variable is available inside ``body``.
+    block:
+        let ownedBackup = beginBackup(destination, source)
+        let backup {.inject.} = ownedBackup
+        var bodyError: ref Exception
+        try:
+            body
+        except:
+            bodyError = getCurrentException()
+        finally:
+            try:
+                finishBackup(ownedBackup)
+            except:
+                if bodyError.isNil:
+                    raise
+                attachSecondaryException(bodyError, getCurrentException())
+        if not bodyError.isNil:
+            raise bodyError
+
+proc backupDatabase*(destination, source: DbConn) =
+    ## Copy the source main database into the destination main database.
+    ## Busy and locked results are raised with structured SQLite error codes.
+    withBackup(destination, source):
+        let progress = backup.step()
+        if progress != BackupStep.done:
+            let code = if progress == BackupStep.busy:
+                    abi.SQLITE_BUSY
+                else:
+                    abi.SQLITE_LOCKED
+            raise newSqliteError(destination, SqliteOperation.backup, cint(code))
+
+template withDatabase*(path: untyped, body: untyped) =
+    ## Open a database and close it on normal exit, exception, or early return.
+    block:
+        let ownedDb = openDatabase(path)
+        let db {.inject.} = ownedDb
+        try:
+            body
+        finally:
+            ownedDb.close()
+
+template withDatabase*(path: untyped, options: untyped,
+        body: untyped) =
+    ## Open a database with options and close it on every exit path.
+    block:
+        let ownedDb = openDatabase(path, options)
+        let db {.inject.} = ownedDb
+        try:
+            body
+        finally:
+            ownedDb.close()
+
+template withStatement*(connection: untyped, sql: untyped,
+        body: untyped) =
+    ## Prepare a statement and finalize it on every exit path.
+    block:
+        let ownedStatement = connection.stmt(sql)
+        let statement {.inject.} = ownedStatement
+        try:
+            body
+        finally:
+            ownedStatement.finalize()
+
 proc loadExtension*(db: DbConn, path: string) =
-    ## Load an SQLite extension. Will raise a ``SqliteError`` exception if loading fails.
+    ## Load a trusted native extension when ``allowExtensions`` was enabled at
+    ## open time. The C loading capability is disabled after each attempt.
     assertCanUseDb db
+    if not DbConnImpl(db).allowExtensions:
+        raise newSqliteError("Extension loading is disabled for this connection.",
+            SqliteOperation.validation)
     rejectEmbeddedNul(path, "Extension path")
-    db.configureBoolean(
-        abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, true,
-        SqliteOperation.loadExtension)
-    var err: cstring
-    let rc = abi.sqlite3_load_extension(db.handle, path.cstring, nil, addr err)
-    if rc != abi.SQLITE_OK:
-        let message = if err.isNil: "" else: $err
-        if not err.isNil:
-            abi.sqlite3_free err
-        raise newSqliteError(db, SqliteOperation.loadExtension, rc, message)
+    db.beginOperation()
+    try:
+        db.configureBoolean(
+            abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, true,
+            SqliteOperation.loadExtension)
+        var loadError: ref Exception
+        try:
+            var err: cstring
+            let rc = abi.sqlite3_load_extension(db.handle, path.cstring, nil, addr err)
+            if rc != abi.SQLITE_OK:
+                let message = if err.isNil: "" else: $err
+                if not err.isNil:
+                    abi.sqlite3_free err
+                raise newSqliteError(db, SqliteOperation.loadExtension, rc, message)
+        except:
+            loadError = getCurrentException()
+        finally:
+            try:
+                db.configureBoolean(
+                    abi.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, false,
+                    SqliteOperation.loadExtension)
+            except:
+                if loadError.isNil:
+                    raise
+                attachSecondaryException(loadError, getCurrentException())
+        if not loadError.isNil:
+            raise loadError
+    finally:
+        db.endOperation()
 
 #
 # ResultRow

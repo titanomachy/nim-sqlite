@@ -10,6 +10,12 @@ This changelog covers changes made after version 0.2.0.
 
 ### Added
 
+- Add `interrupt`, nested `withDeadline` scopes, scoped database and statement cleanup, and complete or incremental SQLite online backups.
+- Add `totalChanges`, SQLite version and compile-option diagnostics, and prepared-statement read-only inspection.
+- Add opt-in native extension loading through `OpenOptions.allowExtensions`.
+- Add optional SQL-length and virtual-machine operation limits and a minimum `sqlite3_abi` version.
+- Add a quick integrity-check result parser and automated GitHub Actions dependency updates.
+- Pin CI actions to immutable revisions and verify generated documentation in CI.
 - Add savepoint-backed nested `transaction` blocks so caught inner failures roll back only their own work.
 - Add `TransactionMode.deferred`, `TransactionMode.immediate`, and `TransactionMode.exclusive` for outermost transactions.
 - Add structured `SqliteError` metadata with primary and extended SQLite result codes, a stable `SqliteOperation` category, and SQLite's diagnostic message.
@@ -18,6 +24,8 @@ This changelog covers changes made after version 0.2.0.
 
 ### Changed
 
+- Disable SQLite's C extension-loading capability after each load attempt, including failures.
+- Reject use of a connection or its statements from a thread other than the opening thread, apart from coordinated interruption.
 - Recover from commit and savepoint-release failures with rollback cleanup, preserving the original exception and exposing secondary cleanup failures through its `parent` chain.
 - Treat `transaction` inside a manually started SQL transaction as a savepoint scope without taking ownership of the outer transaction.
 - **Breaking:** Report public lifecycle misuse with `SqliteUsageError` instead of `AssertionDefect`.

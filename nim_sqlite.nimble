@@ -9,7 +9,7 @@ binDir        = "build"
 
 # Dependencies
 requires "nim >= 2.2.10"
-requires "sqlite3_abi"
+requires "sqlite3_abi >= 3.53.4.0"
 
 task test, "Run tests":
     mkDir binDir
@@ -19,6 +19,7 @@ task examples, "Compile and run examples":
     mkDir binDir
     for example in [
         "basic",
+        "backup_and_deadline",
         "blobs_and_nulls",
         "custom_types",
         "named_parameters",
@@ -32,4 +33,5 @@ task coverage, "Run tests and generate code coverage report":
     exec "./code_coverage.sh"
 
 task docs, "Generate docs":
-    exec "nim doc -o:docs/index.html src/nim_sqlite.nim"
+    exec "bash scripts/generate_docs.sh"
+    exec "python3 scripts/check_docs_snippets.py"

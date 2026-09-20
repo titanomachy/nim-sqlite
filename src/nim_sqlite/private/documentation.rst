@@ -143,9 +143,30 @@ module doesn't need to be explicitly imported for typical usage.
         echo fromDb(row[0], Option[string]) # Will work even if the db value is NULL
     
     # Example of reading a single value. In this case, 'value' will be of type `Option[DbValue]`.
-    let value = db.one("SELECT age FROM Person WHERE name = ?", "John Doe")
+    let value = db.value("SELECT age FROM Person WHERE name = ?", "John Doe")
     if value.isSome:
         echo fromDb(value.get, int) # Prints age of John Doe
+
+
+Scoped resources, deadlines, and online backups
+###############################################
+
+``withDatabase`` injects a ``db`` variable and closes it on every exit path.
+``withStatement`` similarly injects a ``statement`` variable and finalizes it.
+Use ``withDeadline(db, timeoutMs)`` to interrupt long-running SQL after a
+monotonic deadline. SQLite can roll back an interrupted write transaction;
+inspect ``SqliteError.primaryCode`` for ``SQLITE_INTERRUPT``.
+
+``backupDatabase(destination, source)`` copies the source main database into
+the destination. For incremental transfers, ``withBackup`` injects a ``backup``
+handle; call ``step`` with a positive page count and inspect ``remainingPages``
+and ``totalPages`` after each step. The destination cannot be used for other
+operations until the scope exits.
+
+One connection and its statements must not be used concurrently across
+threads. Coordinate ``interrupt`` with connection ``close`` when requesting
+cancellation from another thread. Extensions are trusted native code and
+require ``OpenOptions.allowExtensions`` to be enabled explicitly.
 
 
 Inserting data in bulk

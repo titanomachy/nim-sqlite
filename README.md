@@ -59,6 +59,15 @@ Grace: none(int)
 ```
 
 Close each database when you finish with it. A `try`/`finally` block is a convenient way to make cleanup unconditional.
+For shorter scopes, `withDatabase` and `withStatement` close or finalize the
+injected `db` and `statement` variables on every exit path:
+
+```nim
+withDatabase(":memory:"):
+  db.exec("CREATE TABLE item(value INTEGER)")
+  withStatement(db, "INSERT INTO item VALUES(?)"):
+    statement.exec(42)
+```
 
 ## Opening a connection
 
@@ -89,6 +98,42 @@ defensive mode and disables trusted-schema behavior. It can reject schemas that
 use application-defined functions or virtual tables and does not make SQLite a
 sandbox. See [Safety and hardening](SAFETY.md) for the complete opening and
 security contract.
+
+Set `options.allowExtensions = true` only when loading a trusted native
+extension. `loadExtension` enables SQLite's C loading capability for the call
+and disables it again afterward.
+
+## Deadlines and backups
+
+`interrupt(db)` requests cancellation of work already running on a connection.
+Use `withDeadline(db, timeoutMs)` to stop long SQL work after a monotonic time
+limit. An interrupted statement raises `SqliteError` with primary code
+`SQLITE_INTERRUPT`; SQLite may roll back an entire transaction after an
+interrupted write. Nested deadlines keep the earliest deadline. Synchronize
+`interrupt` with `close` if another thread requests cancellation.
+
+`backupDatabase(destination, source)` copies the main database, including
+between disk and memory connections. For incremental work, `withBackup`
+provides a scoped `backup` handle:
+
+```nim
+withBackup(destination, source):
+  var status = backup.step(8)
+  while status == BackupStep.more:
+    status = backup.step(8)
+  if status in {BackupStep.busy, BackupStep.locked}:
+    echo "Retry after lock contention"
+```
+
+The destination is unavailable for other operations until the backup scope
+ends. `remainingPages` and `totalPages` report progress after each step.
+Different connections can be used independently, but do not use one connection
+or its statements concurrently across threads. The exception is a coordinated
+`interrupt` call while another thread runs SQL.
+
+For an untrusted database file, `quickCheck(db)` returns an empty sequence when
+SQLite reports `ok`, or a sequence of integrity diagnostics otherwise. Run it
+before application queries when the file's integrity matters.
 
 ## Handling errors
 
