@@ -239,10 +239,14 @@ test "online backup supports complete and incremental copies":
             check backup.remainingPages == 0
         destinationStatement.finalize()
         check destination.value("SELECT value FROM t").get().fromDb(int) == 42
+        var escapedBackup: Backup
         expect ValueError:
             withBackup(destination, source):
+                escapedBackup = backup
                 discard backup.step(1)
                 raise newException(ValueError, "leave backup scope")
+        expect SqliteUsageError:
+            discard escapedBackup.step()
         check destination.value("SELECT value FROM t").get().fromDb(int) == 42
         source.exec("INSERT INTO t VALUES(43)")
         destination.backupDatabase(source)

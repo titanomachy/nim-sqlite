@@ -1494,8 +1494,8 @@ template withBackup*(destination, source: untyped, body: untyped) =
     ## Keep both connections open and finish the backup on every exit path.
     ## The ``backup`` variable is available inside ``body``.
     block:
-        let ownedBackup = beginBackup(destination, source)
-        let backup {.inject.} = ownedBackup
+        let backup {.inject.} = beginBackup(destination, source)
+        let ownedBackup = backup
         var bodyError: ref Exception
         try:
             body
@@ -1548,8 +1548,8 @@ template withStatement*(connection: untyped, sql: untyped,
         body: untyped) =
     ## Prepare a statement and finalize it on every exit path.
     block:
-        let ownedStatement = connection.stmt(sql)
-        let statement {.inject.} = ownedStatement
+        let statement {.inject.} = connection.stmt(sql)
+        let ownedStatement = statement
         try:
             body
         finally:
