@@ -10,8 +10,10 @@
    all GitHub Actions jobs to pass on that exact commit, including the minimum
    Nim version, supported operating systems, sanitizers, documentation, and
    coverage.
-4. Create an annotated `vX.Y.Z` tag at the verified commit and push the tag.
-   Build a source archive from that tag and generate a SHA-256 checksum:
+4. Fast-forward `master` to the verified release commit and push it. Confirm
+   GitHub Actions passes on `master`. Create an annotated `vX.Y.Z` tag at that
+   commit and push the tag. Build a source archive from it and generate a
+   SHA-256 checksum:
 
    ```sh
    git archive --format=tar --prefix=nim-sqlite-X.Y.Z/ vX.Y.Z |
