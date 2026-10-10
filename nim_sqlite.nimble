@@ -34,4 +34,4 @@ task coverage, "Run tests and generate code coverage report":
 
 task docs, "Generate docs":
     exec "bash scripts/generate_docs.sh"
-    exec "python3 scripts/check_docs_snippets.py"
+    exec "nim e scripts/check_docs_snippets.nims"
