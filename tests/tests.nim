@@ -908,6 +908,50 @@ test "db.execScript rejects transaction control without committing partial work"
     finally:
         db.close()
 
+test "db.execScript rejects disguised transaction control":
+    for manualTransaction in [false, true]:
+        for prefix in [
+            "; ",
+            ";; /* empty statements */ ;\n",
+            "-- comment\rSELECT\n",
+            "-- comment\rSELECT\r\n",
+            ";\xEF\xBB\xBF /* comment */ ; ",
+            "-- comment\rSELECT\n; /* comment */ ; "
+        ]:
+            for control in ["BEGIN", "COMMIT", "END", "ROLLBACK",
+                    "SAVEPOINT user_scope", "RELEASE nim_sqlite_transaction_1",
+                    "ROLLBACK TO nim_sqlite_transaction_1"]:
+                let db = openDatabase(":memory:")
+                try:
+                    db.exec("CREATE TABLE ExecutionLog(value INTEGER)")
+                    if manualTransaction:
+                        db.exec("BEGIN")
+                        db.exec("INSERT INTO ExecutionLog VALUES(7)")
+                    var raised = false
+                    try:
+                        db.execScript("INSERT INTO ExecutionLog VALUES(1); " &
+                            prefix & control & "; INSERT INTO Missing VALUES(2)")
+                    except SqliteError as error:
+                        raised = true
+                        check error.operation == SqliteOperation.validation
+                        check error.msg ==
+                            "Transaction-control statements are not allowed in execScript."
+                    check raised
+                    check db.isInTransaction == manualTransaction
+                    check db.value("SELECT COUNT(*) FROM ExecutionLog WHERE value = 1").get.intVal == 0
+                    check db.value("SELECT COUNT(*) FROM ExecutionLog WHERE value = 7").get.intVal ==
+                        (if manualTransaction: 1 else: 0)
+                    if db.isInTransaction:
+                        db.exec("ROLLBACK")
+                finally:
+                    db.close()
+
+test "db.execScript ignores transaction keywords inside complete line comments":
+    withDatabase(":memory:"):
+        db.exec("CREATE TABLE ExecutionLog(value INTEGER)")
+        db.execScript("-- comment\rCOMMIT\nINSERT INTO ExecutionLog VALUES(1)")
+        check db.value("SELECT COUNT(*) FROM ExecutionLog").get.intVal == 1
+
 test "db.execScript transaction-control rejection preserves a manual transaction":
     withDb:
         db.exec("BEGIN")

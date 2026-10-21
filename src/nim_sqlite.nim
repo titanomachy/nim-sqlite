@@ -481,7 +481,8 @@ proc validateCompleteSql(sql: string) =
             SqliteOperation.validation)
 
 proc leadingSqlKeyword(sql: cstring): string =
-    ## Returns the first ASCII keyword after SQLite whitespace and comments.
+    ## Returns the first ASCII keyword after empty statements, whitespace,
+    ## and SQLite comments.
     ## The input has already passed ``validateCompleteSql``, so block comments
     ## are known to be terminated.
     if sql.isNil:
@@ -490,7 +491,7 @@ proc leadingSqlKeyword(sql: cstring): string =
     var idx = 0
     while sql[idx] != '\0':
         let character = sql[idx]
-        if character == ' ' or ord(character) in 9 .. 13:
+        if character in {' ', ';'} or ord(character) in 9 .. 13:
             idx.inc
         elif ord(character) == 0xef and ord(sql[idx + 1]) == 0xbb and
                 ord(sql[idx + 2]) == 0xbf:
@@ -498,7 +499,8 @@ proc leadingSqlKeyword(sql: cstring): string =
             idx.inc 3
         elif character == '-' and sql[idx + 1] == '-':
             idx.inc 2
-            while sql[idx] != '\0' and sql[idx] notin {'\r', '\n'}:
+            # SQLite ends a line comment at LF only; CR remains comment text.
+            while sql[idx] notin {'\0', '\n'}:
                 idx.inc
         elif character == '/' and sql[idx + 1] == '*':
             idx.inc 2
