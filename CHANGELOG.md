@@ -12,6 +12,7 @@ This changelog covers changes made after version 0.2.0.
 
 - Report commit failures when `one`, `value`, or an early iterator exit resets a statement with `RETURNING`, preserving any consumer exception and releasing the statement for reuse.
 - Reject transaction control in `execScript` even after empty statements or carriage-return comments, preserving script atomicity and caller-owned transactions.
+- Refresh result column names and counts after SQLite recompiles cached or explicit statements following schema changes, preventing missing or mislabeled values.
 
 ## [0.5.0] - 2026-09-21
 

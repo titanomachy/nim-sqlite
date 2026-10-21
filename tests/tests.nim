@@ -352,6 +352,62 @@ test "db.all":
         check unpackedRows.anyIt(it.name == "John Doe" and it.age == some(47))
         check unpackedRows.anyIt(it.name == "Jane Doe" and it.age == none(int))
 
+test "query metadata follows schema changes on cached and explicit statements":
+    for separateConnection in [false, true]:
+        let path = getTempDir() / ("nim_sqlite_schema_" &
+            $getCurrentProcessId() & "_" & $epochTime() & ".sqlite")
+        let db = openDatabase(path)
+        let schemaDb = if separateConnection: openDatabase(path) else: db
+        var statement: SqlStatement
+        const sql = "SELECT * FROM Item WHERE rowid >= :minimum ORDER BY rowid"
+        try:
+            db.exec("CREATE TABLE Item(a INTEGER, b INTEGER)")
+            db.exec("INSERT INTO Item VALUES(11,22), (33,44)")
+            statement = db.stmt(sql)
+            let originalCachedRows = db.all(sql, (minimum: 1,))
+            let originalExplicitRows = statement.all(1)
+
+            template checkShape(expectedColumns, expectedValues: untyped) =
+                block:
+                    let cachedRows = db.all(sql, (minimum: 1,))
+                    let explicitRows = statement.all(1)
+                    for rows in [cachedRows, explicitRows]:
+                        check rows.len == expectedValues.len
+                        for index, row in rows:
+                            check row.columns == expectedColumns
+                            check row.values == expectedValues[index]
+                            for columnIndex, name in expectedColumns:
+                                # Check named access only when the names match,
+                                # so a regression reports all shapes cleanly.
+                                if row.columns == expectedColumns:
+                                    check row[name] == expectedValues[index][columnIndex]
+
+            schemaDb.exec("ALTER TABLE Item ADD COLUMN c TEXT DEFAULT 'new'")
+            checkShape(@["a", "b", "c"], @[
+                @[toDb(11), toDb(22), toDb("new")],
+                @[toDb(33), toDb(44), toDb("new")]])
+
+            schemaDb.exec("ALTER TABLE Item RENAME COLUMN b TO renamed")
+            checkShape(@["a", "renamed", "c"], @[
+                @[toDb(11), toDb(22), toDb("new")],
+                @[toDb(33), toDb(44), toDb("new")]])
+
+            schemaDb.exec("ALTER TABLE Item DROP COLUMN a")
+            checkShape(@["renamed", "c"], @[
+                @[toDb(22), toDb("new")],
+                @[toDb(44), toDb("new")]])
+
+            for rows in [originalCachedRows, originalExplicitRows]:
+                check rows[0].columns == @["a", "b"]
+                check rows[0].values == @[toDb(11), toDb(22)]
+                check rows[1].values == @[toDb(33), toDb(44)]
+        finally:
+            statement.finalize()
+            schemaDb.close()
+            db.close()
+            if fileExists(path):
+                removeFile(path)
+
 test "db.all with break":
     # This tests that the prepared statement is cleaned up even when the iterator does
     # not run to completion

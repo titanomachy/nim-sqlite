@@ -651,15 +651,13 @@ proc executeToCompletion(db: DbConn, stmtHandle: ptr abi.sqlite3_stmt,
 iterator iterateRows(db: DbConn,
         stmtOrHandle: ptr abi.sqlite3_stmt | SqlStatement): ResultRow =
     let stmtHandle = when stmtOrHandle is ptr abi.sqlite3_stmt: stmtOrHandle else: stmtOrHandle.handle
-    var rowLen = abi.sqlite3_column_count(stmtHandle)
-    var columns = newSeq[string](rowLen)
-    for idx in 0 ..< rowLen:
-        columns[idx] = $abi.sqlite3_column_name(stmtHandle, idx)
+    var rowLen: cint
+    var columns: seq[string]
+    var firstRow = true
     var pendingRow = false
     var iterationError: ref Exception
     try:
         while true:
-            var row = ResultRow(values: newSeq[DbValue](rowLen), columns: columns)
             when stmtOrHandle is ptr abi.sqlite3_stmt:
                 assertCanUseDb db
             else:
@@ -668,6 +666,15 @@ iterator iterateRows(db: DbConn,
             let rc = abi.sqlite3_step(stmtHandle)
             if rc == abi.SQLITE_ROW:
                 pendingRow = true
+                if firstRow:
+                    # Step may recompile a cached or explicit statement after
+                    # a schema change. Only then is its result shape current.
+                    rowLen = abi.sqlite3_column_count(stmtHandle)
+                    columns = newSeq[string](rowLen)
+                    for idx in 0 ..< rowLen:
+                        columns[idx] = $abi.sqlite3_column_name(stmtHandle, idx)
+                    firstRow = false
+                var row = ResultRow(values: newSeq[DbValue](rowLen), columns: columns)
                 for idx in 0 ..< rowLen:
                     row.values[idx] = readColumn(stmtHandle, idx)
                 yield row
