@@ -171,6 +171,7 @@ const defaultOpenOptions* = OpenOptions(
 proc isInTransaction*(db: DbConn): bool
 proc isOpen*(db: DbConn): bool {.inline.}
 proc isAlive*(statement: SqlStatement): bool
+proc attachSecondaryException(primary, secondary: ref Exception)
 
 template handle(db: DbConn): ptr abi.sqlite3 = DbConnImpl(db).handle
 template handle(statement: SqlStatement): ptr abi.sqlite3_stmt = SqlStatementImpl(statement).handle
@@ -652,22 +653,41 @@ iterator iterateRows(db: DbConn,
     var columns = newSeq[string](rowLen)
     for idx in 0 ..< rowLen:
         columns[idx] = $abi.sqlite3_column_name(stmtHandle, idx)
-    while true:
-        var row = ResultRow(values: newSeq[DbValue](rowLen), columns: columns)
-        when stmtOrHandle is ptr abi.sqlite3_stmt:
-            assertCanUseDb db
-        else:
-            assertCanUseStatement stmtOrHandle, busyOk = true
-        let rc = abi.sqlite3_step(stmtHandle)
-        if rc == abi.SQLITE_ROW:
-            for idx in 0 ..< rowLen:
-                row.values[idx] = readColumn(stmtHandle, idx)
-            yield row
-        elif rc == abi.SQLITE_DONE:
-            break
-        else:
-            # Capture SQLite's connection error state before reset or release.
-            raise newSqliteError(db, SqliteOperation.execute, rc)
+    var pendingRow = false
+    var iterationError: ref Exception
+    try:
+        while true:
+            var row = ResultRow(values: newSeq[DbValue](rowLen), columns: columns)
+            when stmtOrHandle is ptr abi.sqlite3_stmt:
+                assertCanUseDb db
+            else:
+                assertCanUseStatement stmtOrHandle, busyOk = true
+            pendingRow = false
+            let rc = abi.sqlite3_step(stmtHandle)
+            if rc == abi.SQLITE_ROW:
+                pendingRow = true
+                for idx in 0 ..< rowLen:
+                    row.values[idx] = readColumn(stmtHandle, idx)
+                yield row
+            elif rc == abi.SQLITE_DONE:
+                break
+            else:
+                # Capture SQLite's connection error state before reset or release.
+                raise newSqliteError(db, SqliteOperation.execute, rc)
+    except:
+        iterationError = getCurrentException()
+        raise
+    finally:
+        if pendingRow:
+            # An early exit after SQLITE_ROW can still fail to commit a write
+            # with RETURNING. Check reset before the owning scope clears its
+            # bindings, returns its cache lease, or finalizes its handle.
+            let rc = abi.sqlite3_reset(stmtHandle)
+            if rc != abi.SQLITE_OK:
+                let cleanupError = newSqliteError(db, SqliteOperation.execute, rc)
+                if iterationError.isNil:
+                    raise cleanupError
+                attachSecondaryException(iterationError, cleanupError)
 
 iterator iteratePositional(db: DbConn, stmtOrHandle: ptr abi.sqlite3_stmt | SqlStatement,
         params: varargs[DbValue]): ResultRow =

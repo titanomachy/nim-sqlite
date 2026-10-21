@@ -8,6 +8,10 @@ This changelog covers changes made after version 0.2.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- Report commit failures when `one`, `value`, or an early iterator exit resets a statement with `RETURNING`, preserving any consumer exception and releasing the statement for reuse.
+
 ## [0.5.0] - 2026-09-21
 
 ### Added

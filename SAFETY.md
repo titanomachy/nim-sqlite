@@ -161,6 +161,8 @@ structured `SqliteError` when a lock prevents completion.
 
 `exec`, prepared-statement `exec`, and each statement in `execScript` continue stepping until SQLite reports completion. If a row-producing statement encounters an error after returning one or more rows, the error is still reported and the statement is reset or released.
 
+When `one`, `value`, or an iterator exits after a row, errors reported while resetting the unfinished statement are also propagated. In particular, a write with `RETURNING` can return a row before its commit fails. If the row consumer already raised an exception, it remains the primary exception and the reset failure is attached through its `parent` chain.
+
 `transaction` rolls back when an exception escapes. Nested transaction blocks use uniquely named SQLite savepoints. A caught inner failure therefore rolls back only the inner block, while a failure escaping the outer block rolls back the full transaction.
 
 Outermost transactions default to `TransactionMode.deferred`. `TransactionMode.immediate` and `TransactionMode.exclusive` select SQLite's corresponding `BEGIN` modes. A nested block always inherits the surrounding transaction's mode because SQLite savepoints do not acquire a separate transaction mode.

@@ -577,6 +577,93 @@ test "db.exec runs row-producing statements to completion":
             db.exec(LateRowErrorPositional, 1)
         db.exec(LateRowErrorPositional, 0)
 
+test "RETURNING early exits report commit failures and release statements":
+    for cacheSize in [0, 100]:
+        let path = getTempDir() / ("nim_sqlite_returning_" &
+            $getCurrentProcessId() & "_" & $epochTime() & ".sqlite")
+        let writer = openDatabase(path, cacheSize = cacheSize)
+        let reader = openDatabase(path)
+        const sql = "INSERT INTO Item(value) VALUES(:value) RETURNING rowid"
+        var statement: SqlStatement
+        try:
+            writer.exec("PRAGMA journal_mode = DELETE")
+            writer.exec("CREATE TABLE Item(value INTEGER)")
+            statement = writer.stmt(sql)
+
+            template checkBusy(body: untyped) =
+                block:
+                    reader.exec("BEGIN")
+                    discard reader.all("SELECT * FROM Item")
+                    var raised = false
+                    try:
+                        body
+                    except SqliteError as error:
+                        raised = true
+                        check error.primaryCode == int32(abi.SQLITE_BUSY)
+                        check error.operation == SqliteOperation.execute
+                    finally:
+                        reader.exec("ROLLBACK")
+                    check raised
+                    check not writer.isInTransaction
+                    check writer.value("SELECT COUNT(*) FROM Item").get.intVal == 0
+                    # Both the cache lease and explicit statement must be reusable.
+                    check writer.value(sql, 2).get.intVal == 1
+                    statement.exec(3)
+                    check writer.value("SELECT COUNT(*) FROM Item").get.intVal == 2
+                    writer.exec("DELETE FROM Item")
+
+            checkBusy:
+                discard writer.value(sql, 1)
+            checkBusy:
+                discard writer.one(sql, (value: 1,))
+            checkBusy:
+                discard statement.value((value: 1,))
+            checkBusy:
+                discard statement.one(1)
+            checkBusy:
+                for row in writer.iterate(sql, (value: 1,)):
+                    check row[0].intVal == 1
+                    break
+            checkBusy:
+                for row in statement.iterate(1):
+                    check row[0].intVal == 1
+                    break
+            checkBusy:
+                # An unrelated exception being handled by the caller must not
+                # cause a cleanup failure to be silently suppressed.
+                try:
+                    raise newException(ValueError, "already handled")
+                except ValueError:
+                    discard writer.value(sql, 1)
+
+            reader.exec("BEGIN")
+            discard reader.all("SELECT * FROM Item")
+            let bodyError = newException(ValueError, "consumer failed")
+            var caught = false
+            try:
+                for row in statement.iterate((value: 1,)):
+                    check row[0].intVal == 1
+                    raise bodyError
+            except ValueError as error:
+                caught = true
+                check error == bodyError
+                check error.parent of SqliteError
+                if error.parent of SqliteError:
+                    check (cast[ref SqliteError](error.parent)).primaryCode ==
+                        int32(abi.SQLITE_BUSY)
+            finally:
+                reader.exec("ROLLBACK")
+            check caught
+            check writer.value("SELECT COUNT(*) FROM Item").get.intVal == 0
+            statement.exec(4)
+        finally:
+            statement.finalize()
+            reader.close()
+            writer.close()
+            for suffix in ["", "-journal", "-wal", "-shm"]:
+                if fileExists(path & suffix):
+                    removeFile(path & suffix)
+
 test "db named parameters":
     withDb:
         db.exec("""
