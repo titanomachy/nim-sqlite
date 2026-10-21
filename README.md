@@ -207,6 +207,12 @@ let count = db.value("SELECT COUNT(*) FROM person")
 
 Rows contain `DbValue` values and support access by position or column name. Use `row.unpack(...)` when you want a typed tuple.
 
+`one`, `value`, and early exits from `iterate` reset the statement before
+returning. A write with `RETURNING` can still fail to commit at that point and
+raise `SqliteError`; receiving a row alone does not guarantee a successful write.
+Cached queries and explicit prepared statements refresh their result column
+names and counts when SQLite recompiles them after a schema change.
+
 ## Transactions and bulk operations
 
 `transaction` commits when the block finishes and rolls back if an exception escapes.

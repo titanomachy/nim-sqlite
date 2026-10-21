@@ -133,6 +133,8 @@ Active operations are guarded against destructive reentrancy:
 
 The connection-level statement cache leases a cached statement to one operation at a time. Reentrant use of the same SQL receives an independent temporary statement, and cache eviction skips leased or busy statements.
 
+Result column names and counts are read after the first successful step, so cached and explicit prepared statements reflect schema changes when SQLite recompiles them.
+
 Invalid lifecycle use is reported as `SqliteUsageError`. SQLite operational and
 library validation failures are reported as `SqliteError`.
 

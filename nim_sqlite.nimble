@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.5.0"
+version       = "0.5.1"
 author        = "titanomachy"
 description   = "A thin, type-safe SQLite wrapper for Nim"
 license       = "MIT"

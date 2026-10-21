@@ -8,6 +8,8 @@ This changelog covers changes made after version 0.2.0.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-21
+
 ### Fixed
 
 - Report commit failures when `one`, `value`, or an early iterator exit resets a statement with `RETURNING`, preserving any consumer exception and releasing the statement for reuse.
@@ -98,7 +100,8 @@ This changelog covers changes made after version 0.2.0.
 - Roll back an active transaction when `COMMIT` fails, while preserving the original commit error.
 - Preserve embedded NUL bytes when reading SQLite `TEXT` values.
 
-[Unreleased]: https://github.com/titanomachy/nim-sqlite/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/titanomachy/nim-sqlite/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/titanomachy/nim-sqlite/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/titanomachy/nim-sqlite/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/titanomachy/nim-sqlite/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/titanomachy/nim-sqlite/compare/v0.2.0...v0.3.0

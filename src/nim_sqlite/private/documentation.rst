@@ -65,7 +65,8 @@ Use ``execScript`` for multiple statements. Unlike single-statement operations, 
 scripts as no-ops. Every SQL operation rejects embedded NUL bytes rather than letting SQLite silently truncate the
 input. ``execScript`` rejects explicit ``BEGIN``, ``COMMIT``, ``END``, ``ROLLBACK``, ``SAVEPOINT``, and ``RELEASE``
 statements before they execute, preventing a script from invalidating the transaction that protects its work. Use
-``exec`` when transaction control must be managed manually.
+``exec`` when transaction control must be managed manually. Leading empty statements and comments do not bypass
+this check.
 
 If a statement produces rows, ``exec`` and ``execScript`` discard them but continue stepping until the statement
 completes. A runtime error on any row raises ``SqliteError``. When ``execScript`` starts its transaction, such an error
@@ -122,6 +123,14 @@ Note that the procedures `one` and `value` returns the result wrapped in an `Opt
 `options module <https://nim-lang.org/docs/options.html>`_ for documentation on how to deal with `Option` values.
 For convenience the `nim_sqlite` module exports the `options.get`, `options.isSome`, and `options.isNone` procedures so the options
 module doesn't need to be explicitly imported for typical usage.
+
+``one``, ``value``, and early exits from ``iterate`` reset the statement before returning. For a write with
+``RETURNING``, that reset can still fail to commit and raises ``SqliteError``. If the consumer is already raising an
+exception, it remains primary and the reset failure is attached through its ``parent`` chain.
+
+Result column names and counts reflect the statement after SQLite recompiles it following a schema change. This
+applies to both internally cached queries and explicit prepared statements, including ``SELECT *`` after columns
+are added or renamed.
 
 .. code-block:: nim
 
